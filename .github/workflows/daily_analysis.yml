@@ -135,7 +135,7 @@ jobs:
           LOG_LEVEL: INFO
           MAX_WORKERS: 3
           # GitHub Actions 环境建议关闭不稳定的数据源
-          ENABLE_CHIP_DISTRIBUTION: 'false'
+          ENABLE_CHIP_DISTRIBUTION: 'true'
           
         run: |
           # 判断运行模式
