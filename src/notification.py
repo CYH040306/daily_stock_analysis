@@ -36,6 +36,7 @@ except ImportError:
 
 from src.config import get_config
 from src.analyzer import AnalysisResult
+from src.formatters import format_feishu_markdown
 from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,9 @@ class NotificationService:
         # 各渠道的 Webhook URL
         self._wechat_url = config.wechat_webhook_url
         self._feishu_url = getattr(config, 'feishu_webhook_url', None)
-        
+
+        # 微信消息类型配置
+        self._wechat_msg_type = getattr(config, 'wechat_msg_type', 'markdown')
         # Telegram 配置
         self._telegram_config = {
             'bot_token': getattr(config, 'telegram_bot_token', None),
@@ -1127,14 +1130,26 @@ class NotificationService:
         推送消息到企业微信机器人
         
         企业微信 Webhook 消息格式：
+        支持 markdown 类型以及 text 类型, markdown 类型在微信中无法展示，可以使用 text 类型,
+        markdown 类型会解析 markdown 格式,text 类型会直接发送纯文本。
+
+        markdown 类型示例：
         {
             "msgtype": "markdown",
             "markdown": {
-                "content": "Markdown 内容"
+                "content": "## 标题\n\n内容"
             }
         }
         
-        注意：企业微信 Markdown 限制 4096 字节（非字符），超长内容会自动分批发送
+        text 类型示例：
+        {
+            "msgtype": "text",
+            "text": {
+                "content": "内容"
+            }
+        }
+
+        注意：企业微信 Markdown 限制 4096 字节（非字符）, Text 类型限制 2048 字节，超长内容会自动分批发送
         可通过环境变量 WECHAT_MAX_BYTES 调整限制值
         
         Args:
@@ -1342,14 +1357,26 @@ class NotificationService:
                 truncated = truncated[:-1]
         return ""
     
+    def _gen_wechat_payload(self, content: str) -> dict:
+        """生成企业微信消息 payload"""
+        if self._wechat_msg_type == 'text':
+            return {
+                "msgtype": "text",
+                "text": {
+                    "content": content
+                }
+            }
+        else:
+            return {
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": content
+                }
+            }
+
     def _send_wechat_message(self, content: str) -> bool:
         """发送企业微信消息"""
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {
-                "content": content
-            }
-        }
+        payload = self._gen_wechat_payload(content)
         
         response = requests.post(
             self._wechat_url,
@@ -1397,7 +1424,7 @@ class NotificationService:
             return False
         
         # 飞书 lark_md 支持有限，先做格式转换
-        formatted_content = self._format_feishu_markdown(content)
+        formatted_content = format_feishu_markdown(content)
 
         max_bytes = self._feishu_max_bytes  # 从配置读取，默认 20000 字节
         
@@ -1627,74 +1654,6 @@ class NotificationService:
 
         return _post_payload(text_payload)
 
-    def _format_feishu_markdown(self, content: str) -> str:
-        """
-        将通用 Markdown 转换为飞书 lark_md 更友好的格式
-        - 飞书不支持 Markdown 标题（# / ## / ###），用加粗代替
-        - 引用块使用前缀替代
-        - 分隔线统一为细线
-        - 表格转换为条目列表
-        """
-        def _flush_table_rows(buffer: List[str], output: List[str]) -> None:
-            if not buffer:
-                return
-
-            def _parse_row(row: str) -> List[str]:
-                cells = [c.strip() for c in row.strip().strip('|').split('|')]
-                return [c for c in cells if c]
-
-            rows = []
-            for raw in buffer:
-                if re.match(r'^\s*\|?\s*[:-]+\s*(\|\s*[:-]+\s*)+\|?\s*$', raw):
-                    continue
-                parsed = _parse_row(raw)
-                if parsed:
-                    rows.append(parsed)
-
-            if not rows:
-                return
-
-            header = rows[0]
-            data_rows = rows[1:] if len(rows) > 1 else []
-            for row in data_rows:
-                pairs = []
-                for idx, cell in enumerate(row):
-                    key = header[idx] if idx < len(header) else f"列{idx + 1}"
-                    pairs.append(f"{key}：{cell}")
-                output.append(f"• {' | '.join(pairs)}")
-
-        lines = []
-        table_buffer: List[str] = []
-
-        for raw_line in content.splitlines():
-            line = raw_line.rstrip()
-
-            if line.strip().startswith('|'):
-                table_buffer.append(line)
-                continue
-
-            if table_buffer:
-                _flush_table_rows(table_buffer, lines)
-                table_buffer = []
-
-            if re.match(r'^#{1,6}\s+', line):
-                title = re.sub(r'^#{1,6}\s+', '', line).strip()
-                line = f"**{title}**" if title else ""
-            elif line.startswith('> '):
-                quote = line[2:].strip()
-                line = f"💬 {quote}" if quote else ""
-            elif line.strip() == '---':
-                line = '────────'
-            elif line.startswith('- '):
-                line = f"• {line[2:].strip()}"
-
-            lines.append(line)
-
-        if table_buffer:
-            _flush_table_rows(table_buffer, lines)
-
-        return "\n".join(lines).strip()
-    
     def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
         """
         通过 SMTP 发送邮件（自动识别 SMTP 服务器）

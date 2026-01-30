@@ -23,12 +23,15 @@ A股自选股智能分析系统 - 主调度程序
 """
 import os
 
-# 代理配置 - 仅在本地环境使用，GitHub Actions 不需要
-if os.getenv("GITHUB_ACTIONS") != "true":
-    # 本地开发环境，如需代理请取消注释或修改端口
-    # os.environ["http_proxy"] = "http://127.0.0.1:10809"
-    # os.environ["https_proxy"] = "http://127.0.0.1:10809"
-    pass
+# 代理配置 - 通过 USE_PROXY 环境变量控制，默认关闭
+# GitHub Actions 环境自动跳过代理配置
+if os.getenv("GITHUB_ACTIONS") != "true" and os.getenv("USE_PROXY", "false").lower() == "true":
+    # 本地开发环境，启用代理（可在 .env 中配置 PROXY_HOST 和 PROXY_PORT）
+    proxy_host = os.getenv("PROXY_HOST", "127.0.0.1")
+    proxy_port = os.getenv("PROXY_PORT", "10809")
+    proxy_url = f"http://{proxy_host}:{proxy_port}"
+    os.environ["http_proxy"] = proxy_url
+    os.environ["https_proxy"] = proxy_url
 
 import argparse
 import logging

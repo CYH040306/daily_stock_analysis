@@ -872,20 +872,22 @@ class GeminiAnalyzer:
                 "max_output_tokens": 8192,
             }
 
-            logger.info(f"[LLM调用] 开始调用 Gemini API (temperature={generation_config['temperature']}, max_tokens={generation_config['max_output_tokens']})...")
+            # 根据实际使用的 API 显示日志
+            api_provider = "OpenAI" if self._use_openai else "Gemini"
+            logger.info(f"[LLM调用] 开始调用 {api_provider} API...")
             
             # 使用带重试的 API 调用
             start_time = time.time()
             response_text = self._call_api_with_retry(prompt, generation_config)
             elapsed = time.time() - start_time
-            
+
             # 记录响应信息
-            logger.info(f"[LLM返回] Gemini API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
+            logger.info(f"[LLM返回] {api_provider} API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
             
             # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
             response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
             logger.info(f"[LLM返回 预览]\n{response_preview}")
-            logger.debug(f"=== Gemini 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
+            logger.debug(f"=== {api_provider} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
             
             # 解析响应
             result = self._parse_response(response_text, code, name)
