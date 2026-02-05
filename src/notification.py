@@ -408,6 +408,8 @@ class NotificationService:
                 f"**操作建议：{result.operation_advice}** | **综合评分：{result.sentiment_score}分** | **趋势预测：{result.trend_prediction}** | **置信度：{confidence_stars}**",
                 "",
             ])
+
+            self._append_market_snapshot(report_lines, result)
             
             # 核心看点
             if hasattr(result, 'key_points') and result.key_points:
@@ -689,6 +691,8 @@ class NotificationService:
                     f"| 💼 **持仓者** | {pos_advice.get('has_position', '继续持有')} |",
                     "",
                 ])
+
+            self._append_market_snapshot(report_lines, result)
             
             # ========== 数据透视 ==========
             data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
@@ -1067,6 +1071,8 @@ class NotificationService:
             f"> {report_date} | 评分: **{result.sentiment_score}** | {result.trend_prediction}",
             "",
         ]
+
+        self._append_market_snapshot(lines, result)
         
         # 核心决策（一句话）
         one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
@@ -1150,6 +1156,34 @@ class NotificationService:
         ])
         
         return "\n".join(lines)
+
+    def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
+        snapshot = getattr(result, 'market_snapshot', None)
+        if not snapshot:
+            return
+
+        lines.extend([
+            "### 📈 当日行情",
+            "",
+            "| 收盘 | 昨收 | 开盘 | 最高 | 最低 | 涨跌幅 | 涨跌额 | 振幅 | 成交量 | 成交额 |",
+            "|------|------|------|------|------|-------|-------|------|--------|--------|",
+            f"| {snapshot.get('close', 'N/A')} | {snapshot.get('prev_close', 'N/A')} | "
+            f"{snapshot.get('open', 'N/A')} | {snapshot.get('high', 'N/A')} | "
+            f"{snapshot.get('low', 'N/A')} | {snapshot.get('pct_chg', 'N/A')} | "
+            f"{snapshot.get('change_amount', 'N/A')} | {snapshot.get('amplitude', 'N/A')} | "
+            f"{snapshot.get('volume', 'N/A')} | {snapshot.get('amount', 'N/A')} |",
+        ])
+
+        if "price" in snapshot:
+            lines.extend([
+                "",
+                "| 当前价 | 量比 | 换手率 | 行情来源 |",
+                "|-------|------|--------|----------|",
+                f"| {snapshot.get('price', 'N/A')} | {snapshot.get('volume_ratio', 'N/A')} | "
+                f"{snapshot.get('turnover_rate', 'N/A')} | {snapshot.get('source', 'N/A')} |",
+            ])
+
+        lines.append("")
     
     def send_to_wechat(self, content: str) -> bool:
         """

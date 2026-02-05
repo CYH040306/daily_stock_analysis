@@ -17,7 +17,7 @@ import json
 import logging
 import re
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple
 from pathlib import Path
 
 import pandas as pd
@@ -250,6 +250,7 @@ class DatabaseManager:
     """
     
     _instance: Optional['DatabaseManager'] = None
+    _initialized: bool = False
     
     def __new__(cls, *args, **kwargs):
         """单例模式实现"""
@@ -265,7 +266,7 @@ class DatabaseManager:
         Args:
             db_url: 数据库连接 URL（可选，默认从配置读取）
         """
-        if self._initialized:
+        if getattr(self, '_initialized', False):
             return
         
         if db_url is None:
@@ -306,7 +307,9 @@ class DatabaseManager:
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
         if cls._instance is not None:
-            cls._instance._engine.dispose()
+            if hasattr(cls._instance, '_engine') and cls._instance._engine is not None:
+                cls._instance._engine.dispose()
+            cls._instance._initialized = False
             cls._instance = None
 
     @classmethod
@@ -335,6 +338,11 @@ class DatabaseManager:
                 # 执行查询
                 session.commit()  # 如果需要
         """
+        if not getattr(self, '_initialized', False) or not hasattr(self, '_SessionLocal'):
+            raise RuntimeError(
+                "DatabaseManager 未正确初始化。"
+                "请确保通过 DatabaseManager.get_instance() 获取实例。"
+            )
         session = self._SessionLocal()
         try:
             return session
@@ -526,6 +534,32 @@ class DatabaseManager:
 
             return list(results)
 
+    def get_news_intel_by_query_id(self, query_id: str, limit: int = 20) -> List[NewsIntel]:
+        """
+        根据 query_id 获取新闻情报列表
+
+        Args:
+            query_id: 分析记录唯一标识
+            limit: 返回数量限制
+
+        Returns:
+            NewsIntel 列表（按发布时间或抓取时间倒序）
+        """
+        from sqlalchemy import func
+
+        with self.get_session() as session:
+            results = session.execute(
+                select(NewsIntel)
+                .where(NewsIntel.query_id == query_id)
+                .order_by(
+                    desc(func.coalesce(NewsIntel.published_date, NewsIntel.fetched_at)),
+                    desc(NewsIntel.fetched_at)
+                )
+                .limit(limit)
+            ).scalars().all()
+
+            return list(results)
+
     def save_analysis_history(
         self,
         result: Any,
@@ -603,6 +637,60 @@ class DatabaseManager:
             ).scalars().all()
 
             return list(results)
+    
+    def get_analysis_history_paginated(
+        self,
+        code: Optional[str] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        offset: int = 0,
+        limit: int = 20
+    ) -> Tuple[List[AnalysisHistory], int]:
+        """
+        分页查询分析历史记录（带总数）
+        
+        Args:
+            code: 股票代码筛选
+            start_date: 开始日期（含）
+            end_date: 结束日期（含）
+            offset: 偏移量（跳过前 N 条）
+            limit: 每页数量
+            
+        Returns:
+            Tuple[List[AnalysisHistory], int]: (记录列表, 总数)
+        """
+        from sqlalchemy import func
+        
+        with self.get_session() as session:
+            conditions = []
+            
+            if code:
+                conditions.append(AnalysisHistory.code == code)
+            if start_date:
+                # created_at >= start_date 00:00:00
+                conditions.append(AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time()))
+            if end_date:
+                # created_at < end_date+1 00:00:00 (即 <= end_date 23:59:59)
+                conditions.append(AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
+            
+            # 构建 where 子句
+            where_clause = and_(*conditions) if conditions else True
+            
+            # 查询总数
+            total_query = select(func.count(AnalysisHistory.id)).where(where_clause)
+            total = session.execute(total_query).scalar() or 0
+            
+            # 查询分页数据
+            data_query = (
+                select(AnalysisHistory)
+                .where(where_clause)
+                .order_by(desc(AnalysisHistory.created_at))
+                .offset(offset)
+                .limit(limit)
+            )
+            results = session.execute(data_query).scalars().all()
+            
+            return list(results), total
     
     def get_data_range(
         self, 

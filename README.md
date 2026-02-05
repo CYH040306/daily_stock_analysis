@@ -43,7 +43,7 @@
 |------|------|
 | AI 模型 | Gemini（免费）、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama |
 | 行情数据 | AkShare、Tushare、Pytdx、Baostock、YFinance |
-| 新闻搜索 | Tavily、SerpAPI、Bocha |
+| 新闻搜索 | Tavily、SerpAPI、Bocha、Brave |
 
 ### 内置交易纪律
 
@@ -114,6 +114,7 @@
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 推荐 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 全渠道搜索 | 可选 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隐私优先，美股优化，多个key用逗号分隔） | 可选 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可选 |
 | `WECHAT_MSG_TYPE` | 企微消息类型，默认 markdown，支持配置 text 类型，发送纯 markdown 文本 | 可选 |
 
@@ -193,7 +194,7 @@ python main.py
 > 📖 完整环境变量、定时任务配置请参考 [完整配置指南](docs/full-guide.md)
 
 
-## 🖥️ 本地 WebUI（可选）
+## 🖥️ 本地 WebUI（可选 - 将在后续的版本弃用）
 
 ```bash
 python main.py --webui       # 启动 WebUI + 执行分析
@@ -203,6 +204,29 @@ python main.py --webui-only  # 仅启动 WebUI
 访问 `http://127.0.0.1:8000` 可进行配置管理、触发分析、查看任务状态。
 
 > 详细说明请参考 [完整指南 - WebUI](docs/full-guide.md#本地-webui-管理界面)
+
+## 🧩 FastAPI Web 服务（可选）
+
+![img.png](sources/fastapi_server.png)
+
+```bash
+cd ./apps/dsa-web            # 进入 React Web 目录
+npm install
+npm run build                # 编译 React Web 页面 会在根目录生成 /static 文件夹
+
+cd ../..                     # 返回项目根目录
+python main.py --serve       # 启动 FastAPI + 执行分析
+python main.py --serve-only  # 仅启动 FastAPI
+python main.py --serve-only --host 0.0.0.0 --port 8000  # 指定启动端口
+```
+
+访问 `http://127.0.0.1:8000` 即可使用该页面（注意一定要执行 `npm install` 步骤，否则没有页面）
+
+也可以使用下面命令单独启动：
+
+```bash
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
 
 ## 🗺️ Roadmap
 

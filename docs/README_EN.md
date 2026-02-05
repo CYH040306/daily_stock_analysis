@@ -15,7 +15,7 @@ Analyze your watchlist daily → generate a decision dashboard → push to multi
 
 **Zero-cost deployment** · Runs on GitHub Actions · No server required
 
-[**Quick Start**](#-quick-start) · [**Key Features**](#-key-features) · [**Sample Output**](#-sample-output) · [**Full Guide**](full-guide.md) · [**FAQ**](FAQ.md) · [**Changelog**](CHANGELOG.md)
+[**Quick Start**](#-quick-start) · [**Key Features**](#-key-features) · [**Sample Output**](#-sample-output) · [**Full Guide**](full-guide_EN.md) · [**FAQ**](FAQ_EN.md) · [**Changelog**](CHANGELOG.md)
 
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
@@ -47,7 +47,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 |------|----------|
 | LLMs | Gemini (free), OpenAI-compatible, DeepSeek, Qwen, Claude, Ollama |
 | Market Data | AkShare, Tushare, Pytdx, Baostock, YFinance |
-| News Search | Tavily, SerpAPI, Bocha |
+| News Search | Tavily, SerpAPI, Bocha, Brave |
 
 ### Built-in Trading Rules
 
@@ -117,8 +117,11 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,AAPL,hk00700` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news) | Recommended |
+| `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API (privacy-focused, US stocks optimized) | Optional |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Backup search | Optional |
+| `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | Optional |
+| `WECHAT_MSG_TYPE` | WeChat Work message type, default `markdown`, set to `text` for plain markdown text | Optional |
 
 **Stock Code Format**
 
@@ -381,9 +384,24 @@ DEBUG=false                    # Enable debug logging
 
 ---
 
+## 🖥️ Local WebUI (Optional)
+
+```bash
+python main.py --webui       # Start WebUI + run analysis
+python main.py --webui-only  # Start WebUI only
+```
+
+Visit `http://127.0.0.1:8000` for configuration management, triggering analysis, and viewing task status.
+
+> For detailed instructions, see [Full Guide - WebUI](full-guide_EN.md#local-webui-management-interface)
+
+---
+
 ## 📖 Documentation
 
-- [Complete Configuration Guide](full-guide.md)
+- [Complete Configuration Guide](full-guide_EN.md)
+- [FAQ](FAQ_EN.md)
+- [Deployment Guide](DEPLOY_EN.md)
 - [Bot Command Reference](bot-command.md)
 - [Feishu Bot Setup](bot/feishu-bot-config.md)
 - [DingTalk Bot Setup](bot/dingding-bot-config.md)

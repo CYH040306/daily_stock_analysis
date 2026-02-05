@@ -695,6 +695,182 @@ class BochaSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class BraveSearchProvider(BaseSearchProvider):
+    """
+    Brave Search 搜索引擎
+
+    特点：
+    - 隐私优先的独立搜索引擎
+    - 索引超过300亿页面
+    - 免费层可用
+    - 支持时间范围过滤
+
+    文档：https://brave.com/search/api/
+    """
+
+    API_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "Brave")
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        """执行 Brave 搜索"""
+        try:
+            # 请求头
+            headers = {
+                'X-Subscription-Token': api_key,
+                'Accept': 'application/json'
+            }
+
+            # 确定时间范围（freshness 参数）
+            if days <= 1:
+                freshness = "pd"  # Past day (24小时)
+            elif days <= 7:
+                freshness = "pw"  # Past week
+            elif days <= 30:
+                freshness = "pm"  # Past month
+            else:
+                freshness = "py"  # Past year
+
+            # 请求参数
+            params = {
+                "q": query,
+                "count": min(max_results, 20),  # Brave 最大支持20条
+                "freshness": freshness,
+                "search_lang": "en",  # 英文内容（US股票优先）
+                "country": "US",  # 美国区域偏好
+                "safesearch": "moderate"
+            }
+
+            # 执行搜索（GET 请求）
+            response = requests.get(
+                self.API_ENDPOINT,
+                headers=headers,
+                params=params,
+                timeout=10
+            )
+
+            # 检查HTTP状态码
+            if response.status_code != 200:
+                error_msg = self._parse_error(response)
+                logger.warning(f"[Brave] 搜索失败: {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg
+                )
+
+            # 解析响应
+            try:
+                data = response.json()
+            except ValueError as e:
+                error_msg = f"响应JSON解析失败: {str(e)}"
+                logger.error(f"[Brave] {error_msg}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg
+                )
+
+            logger.info(f"[Brave] 搜索完成，query='{query}'")
+            logger.debug(f"[Brave] 原始响应: {data}")
+
+            # 解析搜索结果
+            results = []
+            web_data = data.get('web', {})
+            web_results = web_data.get('results', [])
+
+            for item in web_results[:max_results]:
+                # 解析发布日期（ISO 8601 格式）
+                published_date = None
+                age = item.get('age') or item.get('page_age')
+                if age:
+                    try:
+                        # 转换 ISO 格式为简单日期字符串
+                        dt = datetime.fromisoformat(age.replace('Z', '+00:00'))
+                        published_date = dt.strftime('%Y-%m-%d')
+                    except (ValueError, AttributeError):
+                        published_date = age  # 解析失败时使用原始值
+
+                results.append(SearchResult(
+                    title=item.get('title', ''),
+                    snippet=item.get('description', '')[:500],  # 截取到500字符
+                    url=item.get('url', ''),
+                    source=self._extract_domain(item.get('url', '')),
+                    published_date=published_date
+                ))
+
+            logger.info(f"[Brave] 成功解析 {len(results)} 条结果")
+
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True
+            )
+
+        except requests.exceptions.Timeout:
+            error_msg = "请求超时"
+            logger.error(f"[Brave] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except requests.exceptions.RequestException as e:
+            error_msg = f"网络请求失败: {str(e)}"
+            logger.error(f"[Brave] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+        except Exception as e:
+            error_msg = f"未知错误: {str(e)}"
+            logger.error(f"[Brave] {error_msg}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg
+            )
+
+    def _parse_error(self, response) -> str:
+        """解析错误响应"""
+        try:
+            if response.headers.get('content-type', '').startswith('application/json'):
+                error_data = response.json()
+                # Brave API 返回的错误格式
+                if 'message' in error_data:
+                    return error_data['message']
+                if 'error' in error_data:
+                    return error_data['error']
+                return str(error_data)
+            return response.text[:200]
+        except:
+            return f"HTTP {response.status_code}: {response.text[:200]}"
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """从 URL 提取域名作为来源"""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace('www.', '')
+            return domain or '未知来源'
+        except:
+            return '未知来源'
+
+
 class SearchService:
     """
     搜索服务
@@ -719,30 +895,37 @@ class SearchService:
         self,
         bocha_keys: Optional[List[str]] = None,
         tavily_keys: Optional[List[str]] = None,
+        brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
     ):
         """
         初始化搜索服务
-        
+
         Args:
             bocha_keys: 博查搜索 API Key 列表
             tavily_keys: Tavily API Key 列表
+            brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
         """
         self._providers: List[BaseSearchProvider] = []
-        
+
         # 初始化搜索引擎（按优先级排序）
         # 1. Bocha 优先（中文搜索优化，AI摘要）
         if bocha_keys:
             self._providers.append(BochaSearchProvider(bocha_keys))
             logger.info(f"已配置 Bocha 搜索，共 {len(bocha_keys)} 个 API Key")
-        
+
         # 2. Tavily（免费额度更多，每月 1000 次）
         if tavily_keys:
             self._providers.append(TavilySearchProvider(tavily_keys))
             logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
-        
-        # 3. SerpAPI 作为备选（每月 100 次）
+
+        # 3. Brave Search（隐私优先，全球覆盖）
+        if brave_keys:
+            self._providers.append(BraveSearchProvider(brave_keys))
+            logger.info(f"已配置 Brave 搜索，共 {len(brave_keys)} 个 API Key")
+
+        # 4. SerpAPI 作为备选（每月 100 次）
         if serpapi_keys:
             self._providers.append(SerpAPISearchProvider(serpapi_keys))
             logger.info(f"已配置 SerpAPI 搜索，共 {len(serpapi_keys)} 个 API Key")
@@ -1217,6 +1400,7 @@ def get_search_service() -> SearchService:
         _search_service = SearchService(
             bocha_keys=config.bocha_api_keys,
             tavily_keys=config.tavily_api_keys,
+            brave_keys=config.brave_api_keys,
             serpapi_keys=config.serpapi_keys,
         )
     
