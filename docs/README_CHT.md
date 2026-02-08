@@ -184,51 +184,50 @@
 
 > 📖 完整環境變量、定時任務配置請參考 [完整配置指南](full-guide.md)
 
-## 🖥️ 本地 WebUI（可選）
+## 🧩 FastAPI Web 服務（可選）
 
-本地運行時，可啟用 WebUI 來管理配置和觸發分析。
+本地運行時，可啟用 FastAPI 服務來管理配置和觸發分析。
 
 ### 啟動方式
 
 | 命令 | 說明 |
 |------|------|
-| `python main.py --webui` | 啟動 WebUI + 執行一次完整分析 |
-| `python main.py --webui-only` | 僅啟動 WebUI，手動觸發分析 |
+| `python main.py --serve` | 啟動 API 服務 + 執行一次完整分析 |
+| `python main.py --serve-only` | 僅啟動 API 服務，手動觸發分析 |
 
 - 訪問地址：`http://127.0.0.1:8000`
-- 詳細說明請參考 [配置指南 - WebUI](full-guide.md#本地-webui-管理界面)
+- API 文檔：`http://127.0.0.1:8000/docs`
 
 ### 功能特性
 
-- 📝 **配置管理** - 查看/修改 `.env` 里的自選股列表
-- 🚀 **快速分析** - 頁面輸入股票代碼，一鍵觸發分析
+- 📝 **配置管理** - 查看/修改自選股列表
+- 🚀 **快速分析** - 通過 API 接口觸發分析
 - 📊 **實時進度** - 分析任務狀態實時更新，支持多任務並行
 
 ### API 接口
 
 | 接口 | 方法 | 說明 |
 |------|------|------|
-| `/` | GET | 配置管理頁面 |
-| `/health` | GET | 健康檢查 |
-| `/analysis?code=xxx` | GET | 觸發單隻股票異步分析 |
-| `/analysis/history` | GET | 查詢分析歷史記錄 |
-| `/tasks` | GET | 查詢所有任務狀態 |
-| `/task?id=xxx` | GET | 查詢單個任務狀態 |
+| `/api/v1/analysis/analyze` | POST | 觸發股票分析 |
+| `/api/v1/analysis/tasks` | GET | 查詢任務列表 |
+| `/api/v1/analysis/status/{task_id}` | GET | 查詢任務狀態 |
+| `/api/v1/history` | GET | 查詢分析歷史記錄 |
+| `/api/health` | GET | 健康檢查 |
 
 ## 項目結構
 
 ```
 daily_stock_analysis/
 ├── main.py              # 主程序入口
-├── webui.py             # WebUI 入口
+├── server.py            # FastAPI 服務入口
 ├── src/                 # 核心業務代碼
 │   ├── analyzer.py      # AI 分析器（Gemini）
 │   ├── config.py        # 配置管理
 │   ├── notification.py  # 消息推送
 │   ├── storage.py       # 數據存儲
 │   └── ...
+├── api/                 # FastAPI API 模塊
 ├── bot/                 # 機器人模塊
-├── web/                 # WebUI 模塊
 ├── data_provider/       # 數據源適配器
 ├── docker/              # Docker 配置
 │   ├── Dockerfile

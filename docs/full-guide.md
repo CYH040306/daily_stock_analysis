@@ -16,7 +16,8 @@ daily_stock_analysis/
 │   └── ...
 ├── data_provider/       # 多数据源适配器
 ├── bot/                 # 机器人交互模块
-├── web/                 # WebUI 模块
+├── api/                 # FastAPI 后端服务
+├── apps/dsa-web/        # React 前端
 ├── docker/              # Docker 配置
 ├── docs/                # 项目文档
 └── .github/workflows/   # GitHub Actions
@@ -77,6 +78,7 @@ daily_stock_analysis/
 | `EMAIL_SENDER` | 发件人邮箱（如 `xxx@qq.com`） | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（多个用逗号分隔，留空则发给自己） | 可选 |
+| `EMAIL_SENDER_NAME` | 发件人显示名称（默认：daily_stock_analysis股票分析助手） | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（[获取地址](https://www.pushplus.plus)，国内推送服务） | 可选 |
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
@@ -164,6 +166,7 @@ daily_stock_analysis/
 | `EMAIL_SENDER` | 发件人邮箱 | 可选 |
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（逗号分隔，留空发给自己） | 可选 |
+| `EMAIL_SENDER_NAME` | 发件人显示名称 | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook Bearer Token | 可选 |
 | `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
@@ -281,14 +284,6 @@ services:
     <<: *common
     container_name: stock-analyzer
 
-  # WebUI 模式
-  webui:
-    <<: *common
-    container_name: stock-webui
-    command: ["python", "main.py", "--webui-only"]
-    ports:
-      - "8000:8000"
-
   # FastAPI 模式
   server:
     <<: *common
@@ -305,7 +300,6 @@ services:
 docker-compose -f ./docker/docker-compose.yml ps
 
 # 查看日志
-docker-compose -f ./docker/docker-compose.yml logs -f webui
 docker-compose -f ./docker/docker-compose.yml logs -f server
 
 # 停止服务
@@ -313,14 +307,13 @@ docker-compose -f ./docker/docker-compose.yml down
 
 # 重建镜像（代码更新后）
 docker-compose -f ./docker/docker-compose.yml build --no-cache
-docker-compose -f ./docker/docker-compose.yml up -d webui
+docker-compose -f ./docker/docker-compose.yml up -d server
 ```
 
 ### 手动构建镜像
 
 ```bash
 docker build -f docker/Dockerfile -t stock-analysis .
-docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --webui-only
 docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
@@ -544,62 +537,55 @@ python main.py --debug
 
 ---
 
-## 本地 WebUI 管理界面
+## FastAPI API 服务
 
-WebUI 提供配置管理和快速分析功能，支持页面触发单只股票分析。
+FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 
 ### 启动方式
 
 | 命令 | 说明 |
 |------|------|
-| `python main.py --webui` | 启动 WebUI + 执行一次完整分析 |
-| `python main.py --webui-only` | 仅启动 WebUI，手动触发分析 |
-
-**永久启用**：在 `.env` 中设置：
-```env
-WEBUI_ENABLED=true
-```
+| `python main.py --serve` | 启动 API 服务 + 执行一次完整分析 |
+| `python main.py --serve-only` | 仅启动 API 服务，手动触发分析 |
 
 ### 功能特性
 
-- 📝 **配置管理** - 查看/修改 `.env` 里的自选股列表
-- 🚀 **快速分析** - 页面输入股票代码，一键触发分析
+- 📝 **配置管理** - 查看/修改自选股列表
+- 🚀 **快速分析** - 通过 API 接口触发分析
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行
-- 🔗 **API 接口** - 支持程序化调用
+- 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
 
 ### API 接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/` | GET | 配置管理页面 |
-| `/health` | GET | 健康检查 |
-| `/analysis?code=xxx` | GET | 触发单只股票异步分析 |
-| `/analysis/history` | GET | 查询分析历史记录 |
-| `/tasks` | GET | 查询所有任务状态 |
-| `/task?id=xxx` | GET | 查询单个任务状态 |
+| `/api/v1/analysis/analyze` | POST | 触发股票分析 |
+| `/api/v1/analysis/tasks` | GET | 查询任务列表 |
+| `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
+| `/api/v1/history` | GET | 查询分析历史 |
+| `/api/health` | GET | 健康检查 |
+| `/docs` | GET | API Swagger 文档 |
 
 **调用示例**：
 ```bash
 # 健康检查
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/health
 
 # 触发分析（A股）
-curl "http://127.0.0.1:8000/analysis?code=600519"
-
-# 触发分析（港股）
-curl "http://127.0.0.1:8000/analysis?code=hk00700"
+curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"stock_code": "600519"}'
 
 # 查询任务状态
-curl "http://127.0.0.1:8000/task?id=<task_id>"
+curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
 ```
 
 ### 自定义配置
 
 修改默认端口或允许局域网访问：
 
-```env
-WEBUI_HOST=0.0.0.0    # 默认 127.0.0.1
-WEBUI_PORT=8888       # 默认 8000
+```bash
+python main.py --serve-only --host 0.0.0.0 --port 8888
 ```
 
 ### 支持的股票代码格式

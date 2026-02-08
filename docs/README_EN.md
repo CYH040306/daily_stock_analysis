@@ -384,16 +384,17 @@ DEBUG=false                    # Enable debug logging
 
 ---
 
-## 🖥️ Local WebUI (Optional)
+## 🧩 FastAPI Web Service (Optional)
 
 ```bash
-python main.py --webui       # Start WebUI + run analysis
-python main.py --webui-only  # Start WebUI only
+python main.py --serve       # Start API service + run analysis
+python main.py --serve-only  # Start API service only
 ```
 
 Visit `http://127.0.0.1:8000` for configuration management, triggering analysis, and viewing task status.
+API documentation available at `http://127.0.0.1:8000/docs`.
 
-> For detailed instructions, see [Full Guide - WebUI](full-guide_EN.md#local-webui-management-interface)
+> For detailed instructions, see [Full Guide - API Service](full-guide_EN.md#fastapi-api-service)
 
 ---
 

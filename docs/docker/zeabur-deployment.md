@@ -74,8 +74,6 @@ Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 | 模式 | 启动命令 | 描述 |
 |------|----------|------|
 | 定时任务模式（默认） | `python main.py --schedule` | 按计划执行股票分析 |
-| WebUI 模式 | `python main.py --webui` | 启动 WebUI（旧版）和定时任务 |
-| 仅 WebUI 模式 | `python main.py --webui-only` | 仅启动 WebUI，不执行定时任务 |
 | FastAPI 模式 | `python main.py --serve` | 启动 FastAPI 并执行分析 |
 | 仅 FastAPI 模式 | `python main.py --serve-only` | 仅启动 FastAPI，不执行分析 |
 | 仅大盘复盘 | `python main.py --market-review` | 仅执行大盘复盘分析 |
@@ -86,8 +84,6 @@ Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 2. 点击「设置」
 3. 找到「启动命令」配置项
 4. 输入你需要的启动命令，例如：
-    - 启动 WebUI：`python main.py --webui`
-    - 仅启动 WebUI：`python main.py --webui-only`
     - 启动 FastAPI：`python main.py --serve`
     - 仅启动 FastAPI：`python main.py --serve-only --host 0.0.0.0 --port 8000`
     - 启动定时任务：`python main.py --schedule`
@@ -135,13 +131,14 @@ Dockerfile 已采用多阶段构建，前端会在镜像构建时自动打包。
 | `LOG_DIR` | 日志目录 | `/app/logs` |
 | `DATABASE_PATH` | 数据库路径 | `/app/data/stock_analysis.db` |
 
-### 5.2 WebUI 配置
+### 5.2 API 服务配置
 
 | 变量名 | 说明 | 默认值 |
 |--------|------|--------|
-| `WEBUI_HOST` | WebUI 监听地址 | `0.0.0.0` |
-| `WEBUI_PORT` | WebUI 端口 | `8000` |
-| `WEBUI_ENABLED` | 启用 WebUI | `false` |
+| `API_HOST` | API 服务监听地址 | `0.0.0.0` |
+| `API_PORT` | API 服务端口 | `8000` |
+
+> 旧版 `WEBUI_HOST`/`WEBUI_PORT`/`WEBUI_ENABLED` 环境变量仍兼容，会自动转发到 API 服务。
 
 ### 5.3 分析相关配置
 
@@ -208,10 +205,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 ## 8. 常见问题
 
-### 8.1 WebUI 无法访问
+### 8.1 API 服务无法访问
 
-- 检查启动命令是否包含 `--webui` 或 `--webui-only` 参数
-- 检查环境变量 `WEBUI_ENABLED` 是否设置为 `true`
+- 检查启动命令是否包含 `--serve` 或 `--serve-only` 参数
 - 检查「访问」标签页是否已配置域名
 - 检查防火墙设置
 
@@ -239,7 +235,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 你可以在 Zeabur 上部署多个实例，用于不同的功能：
 
-1. 一个实例用于 WebUI（`python main.py --webui-only`）
+1. 一个实例用于 API 服务（`python main.py --serve-only`）
 2. 一个实例用于定时任务（`python main.py --schedule`）
 3. 一个实例用于机器人（`python main.py --discord-bot`）
 

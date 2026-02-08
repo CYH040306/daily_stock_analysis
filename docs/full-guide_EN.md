@@ -16,7 +16,8 @@ daily_stock_analysis/
 │   └── ...
 ├── data_provider/       # Multi-source data adapters
 ├── bot/                 # Bot interaction module
-├── web/                 # WebUI module
+├── api/                 # FastAPI backend service
+├── apps/dsa-web/        # React frontend
 ├── docker/              # Docker configuration
 ├── docs/                # Project documentation
 └── .github/workflows/   # GitHub Actions
@@ -270,11 +271,11 @@ services:
     <<: *common
     container_name: stock-analyzer
 
-  # WebUI mode
-  webui:
+  # FastAPI mode
+  server:
     <<: *common
-    container_name: stock-webui
-    command: ["python", "main.py", "--webui-only"]
+    container_name: stock-server
+    command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
 ```
@@ -286,21 +287,21 @@ services:
 docker-compose -f ./docker/docker-compose.yml ps
 
 # View logs
-docker-compose -f ./docker/docker-compose.yml logs -f webui
+docker-compose -f ./docker/docker-compose.yml logs -f server
 
 # Stop services
 docker-compose -f ./docker/docker-compose.yml down
 
 # Rebuild image (after code update)
 docker-compose -f ./docker/docker-compose.yml build --no-cache
-docker-compose -f ./docker/docker-compose.yml up -d webui
+docker-compose -f ./docker/docker-compose.yml up -d server
 ```
 
 ### Manual Image Build
 
 ```bash
 docker build -t stock-analysis .
-docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --webui-only
+docker run -d --env-file .env -p 8000:8000 -v ./data:/app/data stock-analysis python main.py --serve-only --host 0.0.0.0 --port 8000
 ```
 
 ---
@@ -523,62 +524,55 @@ Log file locations:
 
 ---
 
-## Local WebUI Management Interface
+## FastAPI API Service
 
-WebUI provides configuration management and quick analysis features, supporting single stock analysis triggered from the page.
+FastAPI provides RESTful API service for configuration management and triggering analysis.
 
 ### Startup Methods
 
 | Command | Description |
 |------|------|
-| `python main.py --webui` | Start WebUI + run full analysis once |
-| `python main.py --webui-only` | Start WebUI only, manually trigger analysis |
-
-**Permanently enable**: Set in `.env`:
-```env
-WEBUI_ENABLED=true
-```
+| `python main.py --serve` | Start API service + run full analysis once |
+| `python main.py --serve-only` | Start API service only, manually trigger analysis |
 
 ### Features
 
-- **Configuration Management** - View/modify watchlist in `.env`
-- **Quick Analysis** - Enter stock code on page, one-click trigger analysis
+- **Configuration Management** - View/modify watchlist
+- **Quick Analysis** - Trigger analysis via API
 - **Real-time Progress** - Analysis task status updates in real-time, supports parallel tasks
-- **API Interface** - Supports programmatic calls
+- **API Documentation** - Visit `/docs` for Swagger UI
 
 ### API Endpoints
 
 | Endpoint | Method | Description |
 |------|------|------|
-| `/` | GET | Configuration management page |
-| `/health` | GET | Health check |
-| `/analysis?code=xxx` | GET | Trigger async analysis for single stock |
-| `/analysis/history` | GET | Query analysis history |
-| `/tasks` | GET | Query all task statuses |
-| `/task?id=xxx` | GET | Query single task status |
+| `/api/v1/analysis/analyze` | POST | Trigger stock analysis |
+| `/api/v1/analysis/tasks` | GET | Query task list |
+| `/api/v1/analysis/status/{task_id}` | GET | Query task status |
+| `/api/v1/history` | GET | Query analysis history |
+| `/api/health` | GET | Health check |
+| `/docs` | GET | API Swagger documentation |
 
 **Usage examples**:
 ```bash
 # Health check
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/health
 
 # Trigger analysis (A-shares)
-curl "http://127.0.0.1:8000/analysis?code=600519"
-
-# Trigger analysis (HK stocks)
-curl "http://127.0.0.1:8000/analysis?code=hk00700"
+curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"stock_code": "600519"}'
 
 # Query task status
-curl "http://127.0.0.1:8000/task?id=<task_id>"
+curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
 ```
 
 ### Custom Configuration
 
 Modify default port or allow LAN access:
 
-```env
-WEBUI_HOST=0.0.0.0    # Default 127.0.0.1
-WEBUI_PORT=8888       # Default 8000
+```bash
+python main.py --serve-only --host 0.0.0.0 --port 8888
 ```
 
 ### Supported Stock Code Formats

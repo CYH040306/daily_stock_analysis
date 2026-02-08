@@ -38,7 +38,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 COPY api/ ./api/
 COPY data_provider/ ./data_provider/
-COPY web/ ./web/
 COPY bot/ ./bot/
 COPY src/ ./src/
 COPY --from=web-builder /app/static ./static/
@@ -50,17 +49,17 @@ RUN mkdir -p /app/data /app/logs /app/reports
 ENV PYTHONUNBUFFERED=1
 ENV LOG_DIR=/app/logs
 ENV DATABASE_PATH=/app/data/stock_analysis.db
-# WebUI应用
-ENV WEBUI_HOST=0.0.0.0
-ENV WEBUI_PORT=8000
+# API 服务
+ENV API_HOST=0.0.0.0
+ENV API_PORT=8000
 
-# 暴露 WebUI 端口
+# 暴露 API 端口
 EXPOSE 8000
 
 # 数据卷（持久化数据）
 VOLUME ["/app/data", "/app/logs", "/app/reports"]
 
-# 健康检查（支持 WebUI / FastAPI 模式）
+# 健康检查（FastAPI 模式）
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || curl -f http://localhost:8000/health \
     || python -c "import sys; sys.exit(0)"

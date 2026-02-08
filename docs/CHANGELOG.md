@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [3.0.0] - 2026-02-06
+
+### 移除
+- 🗑️ **移除旧版 WebUI**
+  - 删除基于 `http.server.ThreadingHTTPServer` 的旧版 WebUI（`web/` 包）
+  - 旧版 WebUI 的功能已完全被 FastAPI（`api/`）+ React 前端替代
+  - `--webui` / `--webui-only` 命令行参数标记为弃用，自动重定向到 `--serve` / `--serve-only`
+  - `WEBUI_ENABLED` / `WEBUI_HOST` / `WEBUI_PORT` 环境变量保持兼容，自动转发到 FastAPI 服务
+  - `webui.py` 保留为兼容入口，启动时直接调用 FastAPI 后端
+  - Docker Compose 中移除 `webui` 服务定义，统一使用 `server` 服务
+
+### 变更
+- ♻️ **服务层重构**
+  - 将 `web/services.py` 中的异步任务服务迁移至 `src/services/task_service.py`
+  - Bot 分析命令（`bot/commands/analyze.py`）改为使用 `src.services.task_service`
+  - Docker 环境变量 `WEBUI_HOST`/`WEBUI_PORT` 更名为 `API_HOST`/`API_PORT`（旧名仍兼容）
+
 ## [2.3.0] - 2026-02-01
 
 ### 新增
