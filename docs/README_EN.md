@@ -38,6 +38,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 | Analysis | Multi-dimensional Analysis | Technicals + chip distribution + sentiment + real-time quotes |
 | Market | Global Markets | A-shares, Hong Kong stocks, US stocks |
 | Review | Market Review | Daily overview, sectors, northbound capital flow |
+| Backtest | AI Backtest Validation | Auto-evaluate historical analysis accuracy, direction win rate, SL/TP hit rates |
 | Notifications | Multi-channel Push | Telegram, Discord, Email, WeChat Work, Feishu, etc. |
 | Automation | Scheduled Runs | GitHub Actions scheduled execution, no server required |
 
@@ -279,8 +280,6 @@ PUSHPLUS_TOKEN=your_token_here
 
 ## 🎨 Sample Output
 
-![Demo](../sources/all_2026-01-13_221547.gif)
-
 ### Decision Dashboard Format
 
 ```markdown
@@ -386,13 +385,38 @@ DEBUG=false                    # Enable debug logging
 
 ## 🧩 FastAPI Web Service (Optional)
 
-```bash
-python main.py --serve       # Start API service + run analysis
-python main.py --serve-only  # Start API service only
-```
+Enable the FastAPI service for configuration management and triggering analysis when running locally.
 
-Visit `http://127.0.0.1:8000` for configuration management, triggering analysis, and viewing task status.
-API documentation available at `http://127.0.0.1:8000/docs`.
+### Startup Methods
+
+| Command | Description |
+|---------|-------------|
+| `python main.py --serve` | Start API service + run full analysis once |
+| `python main.py --serve-only` | Start API service only, manually trigger analysis |
+
+- URL: `http://127.0.0.1:8000`
+- API docs: `http://127.0.0.1:8000/docs`
+
+### Features
+
+- 📝 **Configuration Management** - View/modify watchlist
+- 🚀 **Quick Analysis** - Trigger analysis via API
+- 📊 **Real-time Progress** - Analysis task status updates in real-time, supports parallel tasks
+- 📈 **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/analysis/analyze` | POST | Trigger stock analysis |
+| `/api/v1/analysis/tasks` | GET | Query task list |
+| `/api/v1/analysis/status/{task_id}` | GET | Query task status |
+| `/api/v1/history` | GET | Query analysis history |
+| `/api/v1/backtest/run` | POST | Trigger backtest |
+| `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
+| `/api/v1/backtest/performance` | GET | Get overall backtest performance |
+| `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
+| `/api/health` | GET | Health check |
 
 > For detailed instructions, see [Full Guide - API Service](full-guide_EN.md#fastapi-api-service)
 

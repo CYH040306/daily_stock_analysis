@@ -34,6 +34,7 @@ daily_stock_analysis/
 - [通知渠道详细配置](#通知渠道详细配置)
 - [数据源配置](#数据源配置)
 - [高级功能](#高级功能)
+- [回测功能](#回测功能)
 - [本地 WebUI 管理界面](#本地-webui-管理界面)
 
 ---
@@ -537,6 +538,56 @@ python main.py --debug
 
 ---
 
+## 回测功能
+
+回测模块自动对历史 AI 分析记录进行事后验证，评估分析建议的准确性。
+
+### 工作原理
+
+1. 选取已过冷却期（默认 14 天）的 `AnalysisHistory` 记录
+2. 获取分析日之后的日线数据（前向 K 线）
+3. 根据操作建议推断预期方向，与实际走势对比
+4. 评估止盈/止损命中情况，模拟执行收益
+5. 汇总为整体和单股两个维度的表现指标
+
+### 操作建议映射
+
+| 操作建议 | 仓位推断 | 预期方向 | 胜利条件 |
+|---------|---------|---------|---------|
+| 买入/加仓/strong buy | long | up | 涨幅 ≥ 中性带 |
+| 卖出/减仓/strong sell | cash | down | 跌幅 ≥ 中性带 |
+| 持有/hold | long | not_down | 未显著下跌 |
+| 观望/等待/wait | cash | flat | 价格在中性带内 |
+
+### 配置
+
+在 `.env` 中设置以下变量（均有默认值，可选）：
+
+| 变量 | 默认值 | 说明 |
+|------|-------|------|
+| `BACKTEST_ENABLED` | `true` | 是否在每日分析后自动运行回测 |
+| `BACKTEST_EVAL_WINDOW_DAYS` | `10` | 评估窗口（交易日数） |
+| `BACKTEST_MIN_AGE_DAYS` | `14` | 仅回测 N 天前的记录，避免数据不完整 |
+| `BACKTEST_ENGINE_VERSION` | `v1` | 引擎版本号，升级逻辑时用于区分结果 |
+| `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | 中性区间阈值（%），±2% 内视为震荡 |
+
+### 自动运行
+
+回测在每日分析流程完成后自动触发（非阻塞，失败不影响通知推送）。也可通过 API 手动触发。
+
+### 评估指标
+
+| 指标 | 说明 |
+|------|------|
+| `direction_accuracy_pct` | 方向预测准确率（预期方向与实际一致） |
+| `win_rate_pct` | 胜率（胜 / (胜+负)，不含中性） |
+| `avg_stock_return_pct` | 平均股票收益率 |
+| `avg_simulated_return_pct` | 平均模拟执行收益率（含止盈止损退出） |
+| `stop_loss_trigger_rate` | 止损触发率（仅统计配置了止损的记录） |
+| `take_profit_trigger_rate` | 止盈触发率（仅统计配置了止盈的记录） |
+
+---
+
 ## FastAPI API 服务
 
 FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
@@ -553,6 +604,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 📝 **配置管理** - 查看/修改自选股列表
 - 🚀 **快速分析** - 通过 API 接口触发分析
 - 📊 **实时进度** - 分析任务状态实时更新，支持多任务并行
+- 📈 **回测验证** - 评估历史分析准确率，查询方向胜率与模拟收益
 - 🔗 **API 文档** - 访问 `/docs` 查看 Swagger UI
 
 ### API 接口
@@ -563,6 +615,10 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 | `/api/v1/analysis/tasks` | GET | 查询任务列表 |
 | `/api/v1/analysis/status/{task_id}` | GET | 查询任务状态 |
 | `/api/v1/history` | GET | 查询分析历史 |
+| `/api/v1/backtest/run` | POST | 触发回测 |
+| `/api/v1/backtest/results` | GET | 查询回测结果（分页） |
+| `/api/v1/backtest/performance` | GET | 获取整体回测表现 |
+| `/api/v1/backtest/performance/{code}` | GET | 获取单股回测表现 |
 | `/api/health` | GET | 健康检查 |
 | `/docs` | GET | API Swagger 文档 |
 
@@ -578,6 +634,25 @@ curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
 
 # 查询任务状态
 curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
+
+# 触发回测（全部股票）
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"force": false}'
+
+# 触发回测（指定股票）
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "600519", "force": false}'
+
+# 查询整体回测表现
+curl http://127.0.0.1:8000/api/v1/backtest/performance
+
+# 查询单股回测表现
+curl http://127.0.0.1:8000/api/v1/backtest/performance/600519
+
+# 分页查询回测结果
+curl "http://127.0.0.1:8000/api/v1/backtest/results?page=1&limit=20"
 ```
 
 ### 自定义配置

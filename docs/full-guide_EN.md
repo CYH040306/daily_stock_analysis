@@ -34,6 +34,7 @@ daily_stock_analysis/
 - [Notification Channel Configuration](#notification-channel-configuration)
 - [Data Source Configuration](#data-source-configuration)
 - [Advanced Features](#advanced-features)
+- [Backtesting](#backtesting)
 - [Local WebUI Management Interface](#local-webui-management-interface)
 
 ---
@@ -524,6 +525,56 @@ Log file locations:
 
 ---
 
+## Backtesting
+
+The backtesting module automatically validates historical AI analysis records against actual price movements, evaluating the accuracy of analysis recommendations.
+
+### How It Works
+
+1. Selects `AnalysisHistory` records past the cooldown period (default 14 days)
+2. Fetches daily bar data after the analysis date (forward bars)
+3. Infers expected direction from the operation advice and compares against actual movement
+4. Evaluates stop-loss/take-profit hit conditions and simulates execution returns
+5. Aggregates into overall and per-stock performance metrics
+
+### Operation Advice Mapping
+
+| Operation Advice | Position | Expected Direction | Win Condition |
+|-----------------|----------|-------------------|---------------|
+| Buy / Add / Strong Buy | long | up | Return >= neutral band |
+| Sell / Reduce / Strong Sell | cash | down | Decline >= neutral band |
+| Hold | long | not_down | No significant decline |
+| Wait / Observe | cash | flat | Price within neutral band |
+
+### Configuration
+
+Set the following variables in `.env` (all optional, have defaults):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BACKTEST_ENABLED` | `true` | Whether to auto-run backtest after daily analysis |
+| `BACKTEST_EVAL_WINDOW_DAYS` | `10` | Evaluation window (trading days) |
+| `BACKTEST_MIN_AGE_DAYS` | `14` | Only backtest records older than N days to avoid incomplete data |
+| `BACKTEST_ENGINE_VERSION` | `v1` | Engine version, used to distinguish results when logic is updated |
+| `BACKTEST_NEUTRAL_BAND_PCT` | `2.0` | Neutral band threshold (%), ±2% treated as range-bound |
+
+### Auto-run
+
+Backtesting triggers automatically after the daily analysis flow completes (non-blocking; failures do not affect notifications). It can also be triggered manually via API.
+
+### Evaluation Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `direction_accuracy_pct` | Direction prediction accuracy (expected direction matches actual) |
+| `win_rate_pct` | Win rate (wins / (wins + losses), excludes neutral) |
+| `avg_stock_return_pct` | Average stock return percentage |
+| `avg_simulated_return_pct` | Average simulated execution return (including SL/TP exits) |
+| `stop_loss_trigger_rate` | Stop-loss trigger rate (only counts records with SL configured) |
+| `take_profit_trigger_rate` | Take-profit trigger rate (only counts records with TP configured) |
+
+---
+
 ## FastAPI API Service
 
 FastAPI provides RESTful API service for configuration management and triggering analysis.
@@ -540,6 +591,7 @@ FastAPI provides RESTful API service for configuration management and triggering
 - **Configuration Management** - View/modify watchlist
 - **Quick Analysis** - Trigger analysis via API
 - **Real-time Progress** - Analysis task status updates in real-time, supports parallel tasks
+- **Backtest Validation** - Evaluate historical analysis accuracy, query direction win rate and simulated returns
 - **API Documentation** - Visit `/docs` for Swagger UI
 
 ### API Endpoints
@@ -550,6 +602,10 @@ FastAPI provides RESTful API service for configuration management and triggering
 | `/api/v1/analysis/tasks` | GET | Query task list |
 | `/api/v1/analysis/status/{task_id}` | GET | Query task status |
 | `/api/v1/history` | GET | Query analysis history |
+| `/api/v1/backtest/run` | POST | Trigger backtest |
+| `/api/v1/backtest/results` | GET | Query backtest results (paginated) |
+| `/api/v1/backtest/performance` | GET | Get overall backtest performance |
+| `/api/v1/backtest/performance/{code}` | GET | Get per-stock backtest performance |
 | `/api/health` | GET | Health check |
 | `/docs` | GET | API Swagger documentation |
 
@@ -565,6 +621,25 @@ curl -X POST http://127.0.0.1:8000/api/v1/analysis/analyze \
 
 # Query task status
 curl http://127.0.0.1:8000/api/v1/analysis/status/<task_id>
+
+# Trigger backtest (all stocks)
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"force": false}'
+
+# Trigger backtest (specific stock)
+curl -X POST http://127.0.0.1:8000/api/v1/backtest/run \
+  -H 'Content-Type: application/json' \
+  -d '{"code": "600519", "force": false}'
+
+# Query overall backtest performance
+curl http://127.0.0.1:8000/api/v1/backtest/performance
+
+# Query per-stock backtest performance
+curl http://127.0.0.1:8000/api/v1/backtest/performance/600519
+
+# Paginated backtest results
+curl "http://127.0.0.1:8000/api/v1/backtest/results?page=1&limit=20"
 ```
 
 ### Custom Configuration

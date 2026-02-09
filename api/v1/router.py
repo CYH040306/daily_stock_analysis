@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import health, analysis, history, stocks
+from api.v1.endpoints import analysis, history, stocks, backtest
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -32,4 +32,10 @@ router.include_router(
     stocks.router,
     prefix="/stocks",
     tags=["Stocks"]
+)
+
+router.include_router(
+    backtest.router,
+    prefix="/backtest",
+    tags=["Backtest"]
 )

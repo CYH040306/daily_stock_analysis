@@ -36,6 +36,13 @@ from api.v1.schemas.stocks import (
     StockHistoryResponse,
     KLineData,
 )
+from api.v1.schemas.backtest import (
+    BacktestRunRequest,
+    BacktestRunResponse,
+    BacktestResultItem,
+    BacktestResultsResponse,
+    PerformanceMetrics,
+)
 
 __all__ = [
     # common
@@ -62,4 +69,10 @@ __all__ = [
     "StockQuote",
     "StockHistoryResponse",
     "KLineData",
+    # backtest
+    "BacktestRunRequest",
+    "BacktestRunResponse",
+    "BacktestResultItem",
+    "BacktestResultsResponse",
+    "PerformanceMetrics",
 ]
