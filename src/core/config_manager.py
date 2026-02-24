@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import logging
 import os
 import re
 import threading
@@ -13,6 +15,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from dotenv import dotenv_values
 
 _ASSIGNMENT_PATTERN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
+_FALLBACK_REWRITE_ERRNOS = {errno.EBUSY, errno.EXDEV}
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
@@ -64,7 +69,7 @@ class ConfigManager:
         sensitive_keys: Set[str],
         mask_token: str,
     ) -> Tuple[List[str], List[str], str]:
-        """Apply updates into `.env` file using atomic replace semantics."""
+        """Apply updates into `.env` file using atomic replace when possible."""
         with self._lock:
             current_values = self.read_config_map()
             mutable_updates: Dict[str, str] = {}
@@ -90,7 +95,7 @@ class ConfigManager:
             return list(mutable_updates.keys()), skipped_masked, self.get_config_version()
 
     def _atomic_upsert(self, updates: Dict[str, str]) -> None:
-        """Write updates with temp file + fsync + rename strategy."""
+        """Write updates with atomic rename and in-place fallback for mounted files."""
         lines = self._read_lines()
         key_to_index = self._find_last_key_indexes(lines)
 
@@ -115,7 +120,27 @@ class ConfigManager:
             file_obj.flush()
             os.fsync(file_obj.fileno())
 
-        os.replace(temp_path, self._env_path)
+        try:
+            os.replace(temp_path, self._env_path)
+        except OSError as exc:
+            if exc.errno not in _FALLBACK_REWRITE_ERRNOS:
+                raise
+
+            logger.warning(
+                "Atomic replace for .env failed with errno=%s, falling back to in-place rewrite",
+                exc.errno,
+            )
+            self._rewrite_in_place(content)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    def _rewrite_in_place(self, content: str) -> None:
+        """Rewrite `.env` content in place when rename is unsupported by mount type."""
+        with self._env_path.open("w", encoding="utf-8", newline="\n") as file_obj:
+            file_obj.write(content)
+            file_obj.flush()
+            os.fsync(file_obj.fileno())
 
     def _read_lines(self) -> List[str]:
         if not self._env_path.exists():

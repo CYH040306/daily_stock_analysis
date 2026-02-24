@@ -39,6 +39,26 @@ import os
 logger = logging.getLogger(__name__)
 
 
+# ETF code prefixes by exchange
+# Shanghai: 51xxxx, 52xxxx, 56xxxx, 58xxxx
+# Shenzhen: 15xxxx, 16xxxx, 18xxxx
+_ETF_SH_PREFIXES = ('51', '52', '56', '58')
+_ETF_SZ_PREFIXES = ('15', '16', '18')
+_ETF_ALL_PREFIXES = _ETF_SH_PREFIXES + _ETF_SZ_PREFIXES
+
+
+def _is_etf_code(stock_code: str) -> bool:
+    """
+    Check if the code is an ETF fund code.
+
+    ETF code ranges:
+    - Shanghai ETF: 51xxxx, 52xxxx, 56xxxx, 58xxxx
+    - Shenzhen ETF: 15xxxx, 16xxxx, 18xxxx
+    """
+    code = stock_code.strip().split('.')[0]
+    return code.startswith(_ETF_ALL_PREFIXES) and len(code) == 6
+
+
 def _is_us_code(stock_code: str) -> bool:
     """
     判断代码是否为美股
@@ -234,30 +254,37 @@ class TushareFetcher(BaseFetcher):
         转换股票代码为 Tushare 格式
         
         Tushare 要求的格式：
-        - 沪市：600519.SH
-        - 深市：000001.SZ
+        - 沪市股票：600519.SH
+        - 深市股票：000001.SZ
+        - 沪市 ETF：510050.SH, 563230.SH
+        - 深市 ETF：159919.SZ
         
         Args:
-            stock_code: 原始代码，如 '600519', '000001'
+            stock_code: 原始代码，如 '600519', '000001', '563230'
             
         Returns:
-            Tushare 格式代码，如 '600519.SH', '000001.SZ'
+            Tushare 格式代码，如 '600519.SH', '000001.SZ', '563230.SH'
         """
         code = stock_code.strip()
         
-        # 已经包含后缀的情况
+        # Already has suffix
         if '.' in code:
             return code.upper()
         
-        # 根据代码前缀判断市场
-        # 沪市：600xxx, 601xxx, 603xxx, 688xxx (科创板)
-        # 深市：000xxx, 002xxx, 300xxx (创业板)
+        # ETF: determine exchange by prefix
+        if code.startswith(_ETF_SH_PREFIXES) and len(code) == 6:
+            return f"{code}.SH"
+        if code.startswith(_ETF_SZ_PREFIXES) and len(code) == 6:
+            return f"{code}.SZ"
+        
+        # Regular stocks
+        # Shanghai: 600xxx, 601xxx, 603xxx, 688xxx (STAR Market)
+        # Shenzhen: 000xxx, 002xxx, 300xxx (ChiNext)
         if code.startswith(('600', '601', '603', '688')):
             return f"{code}.SH"
         elif code.startswith(('000', '002', '300')):
             return f"{code}.SZ"
         else:
-            # 默认尝试深市
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
             return f"{code}.SZ"
     
@@ -271,41 +298,53 @@ class TushareFetcher(BaseFetcher):
         """
         从 Tushare 获取原始数据
         
-        使用 daily() 接口获取日线数据
+        根据代码类型选择不同接口：
+        - 普通股票：daily()
+        - ETF 基金：fund_daily()
         
         流程：
         1. 检查 API 是否可用
         2. 检查是否为美股（不支持）
         3. 执行速率限制检查
         4. 转换股票代码格式
-        5. 调用 API 获取数据
+        5. 根据代码类型选择接口并调用
         """
         if self._api is None:
             raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")
         
-        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        # US stocks not supported
         if _is_us_code(stock_code):
             raise DataFetchError(f"TushareFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
         
-        # 速率限制检查
+        # Rate-limit check
         self._check_rate_limit()
         
-        # 转换代码格式
+        # Convert code format
         ts_code = self._convert_stock_code(stock_code)
         
-        # 转换日期格式（Tushare 要求 YYYYMMDD）
+        # Convert date format (Tushare requires YYYYMMDD)
         ts_start = start_date.replace('-', '')
         ts_end = end_date.replace('-', '')
         
-        logger.debug(f"调用 Tushare daily({ts_code}, {ts_start}, {ts_end})")
+        is_etf = _is_etf_code(stock_code)
+        api_name = "fund_daily" if is_etf else "daily"
+        logger.debug(f"调用 Tushare {api_name}({ts_code}, {ts_start}, {ts_end})")
         
         try:
-            # 调用 daily 接口获取日线数据
-            df = self._api.daily(
-                ts_code=ts_code,
-                start_date=ts_start,
-                end_date=ts_end,
-            )
+            if is_etf:
+                # ETF uses fund_daily interface
+                df = self._api.fund_daily(
+                    ts_code=ts_code,
+                    start_date=ts_start,
+                    end_date=ts_end,
+                )
+            else:
+                # Regular stocks use daily interface
+                df = self._api.daily(
+                    ts_code=ts_code,
+                    start_date=ts_start,
+                    end_date=ts_end,
+                )
             
             return df
             
@@ -393,11 +432,17 @@ class TushareFetcher(BaseFetcher):
             # 转换代码格式
             ts_code = self._convert_stock_code(stock_code)
             
-            # 调用 stock_basic 接口
-            df = self._api.stock_basic(
-                ts_code=ts_code,
-                fields='ts_code,name'
-            )
+            # ETF uses fund_basic, regular stocks use stock_basic
+            if _is_etf_code(stock_code):
+                df = self._api.fund_basic(
+                    ts_code=ts_code,
+                    fields='ts_code,name'
+                )
+            else:
+                df = self._api.stock_basic(
+                    ts_code=ts_code,
+                    fields='ts_code,name'
+                )
             
             if df is not None and not df.empty:
                 name = df.iloc[0]['name']
@@ -567,10 +612,12 @@ class TushareFetcher(BaseFetcher):
             logger.warning(f"Tushare (旧版) 获取实时行情失败 {stock_code}: {e}")
             return None
 
-    def get_main_indices(self) -> Optional[List[dict]]:
+    def get_main_indices(self, region: str = "cn") -> Optional[List[dict]]:
         """
-        获取主要指数实时行情 (Tushare Pro)
+        获取主要指数实时行情 (Tushare Pro)，仅支持 A 股
         """
+        if region != "cn":
+            return None
         if self._api is None:
             return None
 

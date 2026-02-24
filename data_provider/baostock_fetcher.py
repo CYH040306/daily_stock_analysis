@@ -145,6 +145,13 @@ class BaostockFetcher(BaseFetcher):
         # 去除可能的后缀
         code = code.replace('.SH', '').replace('.SZ', '').replace('.sh', '').replace('.sz', '')
         
+        # ETF: Shanghai ETF (51xx, 52xx, 56xx, 58xx) -> sh; Shenzhen ETF (15xx, 16xx, 18xx) -> sz
+        if len(code) == 6:
+            if code.startswith(('51', '52', '56', '58')):
+                return f"sh.{code}"
+            if code.startswith(('15', '16', '18')):
+                return f"sz.{code}"
+
         # 根据代码前缀判断市场
         if code.startswith(('600', '601', '603', '688')):
             return f"sh.{code}"
