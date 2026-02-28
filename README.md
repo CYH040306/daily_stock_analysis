@@ -260,17 +260,17 @@ python main.py
 
 ### 启动方式
 
-1. **编译前端** (首次运行需要)
+1. **启动服务**（默认会自动编译前端）
+   ```bash
+   python main.py --webui       # 启动 Web 界面 + 执行定时分析
+   python main.py --webui-only  # 仅启动 Web 界面
+   ```
+   启动时会在 `apps/dsa-web` 自动执行 `npm install && npm run build`。
+   如需关闭自动构建，设置 `WEBUI_AUTO_BUILD=false`，并改为手动执行：
    ```bash
    cd ./apps/dsa-web
    npm install && npm run build
    cd ../..
-   ```
-
-2. **启动服务**
-   ```bash
-   python main.py --webui       # 启动 Web 界面 + 执行定时分析
-   python main.py --webui-only  # 仅启动 Web 界面
    ```
 
 访问 `http://127.0.0.1:8000` 即可使用。
