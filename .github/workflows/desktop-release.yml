@@ -127,6 +127,14 @@ jobs:
             apps/dsa-web/package-lock.json
             apps/dsa-desktop/package-lock.json
 
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-macos-${{ matrix.arch }}-${{ hashFiles('apps/dsa-desktop/package-lock.json') }}
+          restore-keys: |
+            electron-macos-${{ matrix.arch }}-
+
       - name: Disable Spotlight indexing (prevents hdiutil Resource busy)
         run: sudo mdutil -a -i off
 

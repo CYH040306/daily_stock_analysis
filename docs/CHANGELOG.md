@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Docs
 - 📝 Clarified GitHub Actions non-trading-day manual run controls (`TRADING_DAY_CHECK_ENABLED` + `force_run`) for Issue #461 / PR #466
 
+## [3.4.8] - 2026-03-02
+
+### Fixed
+- 🐛 **Desktop exe crashes on startup with `FileNotFoundError`** — PyInstaller build was missing litellm's JSON data files (e.g. `model_prices_and_context_window_backup.json`). Added `--collect-data litellm` to both Windows and macOS build scripts so the files are correctly bundled in the executable.
+
+### CI
+- 🔧 Cache Electron binaries on macOS CI runners to prevent intermittent EOF download failures when fetching `electron-vX.Y.Z-darwin-*.zip` from GitHub CDN
+- 🔧 Fix macOS DMG `hdiutil Resource busy` error during desktop packaging
+
+### Docs
+- 📝 Clarify non-trading-day manual run controls for GitHub Actions (`TRADING_DAY_CHECK_ENABLED` + `force_run`) (#474)
+
 ## [3.4.7] - 2026-02-28
 
 ### Added
