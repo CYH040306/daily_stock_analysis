@@ -1,6 +1,8 @@
 import type React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ApiErrorAlert } from '../components/common';
+import { getParsedApiError } from '../api/error';
 import type { HistoryItem, AnalysisReport, TaskInfo } from '../types/analysis';
 import { historyApi } from '../api/history';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
@@ -17,7 +19,11 @@ import { useTaskStream } from '../hooks';
  * 顶部输入 + 左侧历史 + 右侧报告
  */
 const HomePage: React.FC = () => {
-  const { setLoading, setError: setStoreError } = useAnalysisStore();
+  const {
+    error: analysisError,
+    setLoading,
+    setError: setStoreError,
+  } = useAnalysisStore();
   const navigate = useNavigate();
 
   // 输入状态
@@ -82,7 +88,7 @@ const HomePage: React.FC = () => {
     onTaskFailed: (task) => {
       updateTask(task);
       // 显示错误提示
-      setStoreError(task.error || '分析失败');
+      setStoreError(getParsedApiError(task.error || '分析失败'));
       // 延迟移除任务
       setTimeout(() => removeTask(task.taskId), 5000);
     },
@@ -150,20 +156,23 @@ const HomePage: React.FC = () => {
         setIsLoadingReport(true);
         try {
           const report = await historyApi.getDetail(firstItem.id);
+          setStoreError(null);
           setSelectedReport(report);
         } catch (err) {
           console.error('Failed to fetch first report:', err);
+          setStoreError(getParsedApiError(err));
         } finally {
           setIsLoadingReport(false);
         }
       }
     } catch (err) {
       console.error('Failed to fetch history:', err);
+      setStoreError(getParsedApiError(err));
     } finally {
       setIsLoadingHistory(false);
       setIsLoadingMore(false);
     }
-  }, [pageSize]);
+  }, [pageSize, setStoreError]);
 
   // 加载更多历史记录
   const handleLoadMore = useCallback(() => {
@@ -173,22 +182,21 @@ const HomePage: React.FC = () => {
   }, [fetchHistory, isLoadingMore, hasMore]);
 
   // 初始加载 - 自动选择第一条（仅挂载时执行一次）
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchHistory(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Background polling: re-fetch history every 30s for CLI-initiated analyses
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const interval = setInterval(() => {
       fetchHistory(false, true, true);
     }, 30_000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Refresh when tab regains visibility (e.g. user ran main.py in another terminal)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -197,6 +205,7 @@ const HomePage: React.FC = () => {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 点击历史项加载报告
@@ -211,11 +220,12 @@ const HomePage: React.FC = () => {
       const report = await historyApi.getDetail(recordId);
       // Ignore result if a newer click has already been issued.
       if (requestId === analysisRequestIdRef.current) {
+        setStoreError(null);
         setSelectedReport(report);
       }
     } catch (err) {
       console.error('Failed to fetch report:', err);
-      setStoreError(err instanceof Error ? err.message : '报告加载失败');
+      setStoreError(getParsedApiError(err));
     }
   };
 
@@ -257,7 +267,7 @@ const HomePage: React.FC = () => {
           // 显示重复任务错误
           setDuplicateError(`股票 ${err.stockCode} 正在分析中，请等待完成`);
         } else {
-          setStoreError(err instanceof Error ? err.message : '分析失败');
+          setStoreError(getParsedApiError(err));
         }
       }
     } finally {
@@ -370,6 +380,12 @@ const HomePage: React.FC = () => {
 
       {/* 右侧报告详情 */}
       <section className="md:col-start-4 md:row-start-2 flex-1 overflow-y-auto overflow-x-auto px-3 md:px-0 md:pl-1 min-w-0 min-h-0">
+        {analysisError ? (
+          <ApiErrorAlert
+            error={analysisError}
+            className="mb-3"
+          />
+        ) : null}
         {isLoadingReport ? (
           <div className="flex flex-col items-center justify-center h-full">
             <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />

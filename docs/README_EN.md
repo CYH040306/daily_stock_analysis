@@ -133,6 +133,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Market | Format | Examples |
 |--------|--------|----------|
 | A-shares | 6-digit number | `600519`, `000001`, `300750` |
+| BSE (Beijing) | 8/4/92 prefix, 6-digit | `920748`, `838163`, `430047` |
 | HK Stocks | hk + 5-digit number | `hk00700`, `hk09988` |
 | US Stocks | 1-5 uppercase letters | `AAPL`, `TSLA`, `GOOGL` |
 

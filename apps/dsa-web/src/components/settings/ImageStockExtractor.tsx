@@ -1,5 +1,8 @@
 import type React from 'react';
 import { useCallback, useState } from 'react';
+import type { ParsedApiError } from '../../api/error';
+import { createParsedApiError, getParsedApiError } from '../../api/error';
+import { ApiErrorAlert } from '../common';
 import { stocksApi } from '../../api/stocks';
 import { systemConfigApi, SystemConfigConflictError } from '../../api/systemConfig';
 
@@ -24,7 +27,7 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
   const [codes, setCodes] = useState<string[]>([]);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isMerging, setIsMerging] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ParsedApiError | null>(null);
   const [isDragging, setIsDragging] = useState(false);
 
   const parseCurrentList = useCallback(() => {
@@ -38,11 +41,19 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
     async (file: File) => {
       const ext = '.' + (file.name.split('.').pop() ?? '').toLowerCase();
       if (!ALLOWED_EXT.includes(ext)) {
-        setError('仅支持 JPG、PNG、WebP、GIF 格式');
+        setError(createParsedApiError({
+          title: '文件格式不支持',
+          message: '仅支持 JPG、PNG、WebP、GIF 格式。',
+          category: 'unknown',
+        }));
         return;
       }
       if (file.size > MAX_SIZE) {
-        setError('图片不超过 5MB');
+        setError(createParsedApiError({
+          title: '图片尺寸超出限制',
+          message: '图片大小不能超过 5MB。',
+          category: 'unknown',
+        }));
         return;
       }
 
@@ -52,13 +63,7 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
         const res = await stocksApi.extractFromImage(file);
         setCodes(res.codes ?? []);
       } catch (e) {
-        const err = e && typeof e === 'object' ? e as { code?: string; response?: { data?: { message?: string }; status?: number } } : null;
-        const resp = err?.response ?? null;
-        const msg = resp?.data?.message ?? null;
-        let fallback = '识别失败，请重试';
-        if (resp?.status === 429) fallback = '请求过于频繁，请稍后再试';
-        else if (err?.code === 'ECONNABORTED') fallback = '请求超时，请检查网络后重试';
-        setError(msg || fallback);
+        setError(getParsedApiError(e));
         setCodes([]);
       } finally {
         setIsExtracting(false);
@@ -103,7 +108,11 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
   const mergeToWatchlist = useCallback(async () => {
     if (codes.length === 0) return;
     if (!configVersion) {
-      setError('请先加载配置后再合并');
+      setError(createParsedApiError({
+        title: '配置尚未加载',
+        message: '请先加载配置后再合并。',
+        category: 'unknown',
+      }));
       return;
     }
     const current = parseCurrentList();
@@ -124,9 +133,15 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
     } catch (e) {
       if (e instanceof SystemConfigConflictError) {
         onMerged();
-        setError('配置已更新，请再次点击「合并到自选股」');
+        setError(createParsedApiError({
+          title: '配置已发生变化',
+          message: '配置已更新，请再次点击“合并到自选股”。',
+          rawMessage: e.parsedError.rawMessage,
+          status: e.parsedError.status,
+          category: e.parsedError.category,
+        }));
       } else {
-        setError(e instanceof Error ? e.message : '合并保存失败');
+        setError(getParsedApiError(e));
       }
     } finally {
       setIsMerging(false);
@@ -167,9 +182,7 @@ export const ImageStockExtractor: React.FC<ImageStockExtractorProps> = ({
       </div>
 
       {error ? (
-        <div className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          {error}
-        </div>
+        <ApiErrorAlert error={error} className="mb-3" />
       ) : null}
 
       {codes.length > 0 ? (
