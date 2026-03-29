@@ -16,13 +16,13 @@
 
 **基於 AI 大模型的 A股/港股/美股 智能分析系統**
 
-自動分析自選股 → 生成決策儀表盤 → 多渠道推送（Telegram/Discord/郵件/企業微信/飛書）
+自動分析自選股 → 生成決策儀表盤 → 多渠道推送（Telegram/Discord/Slack/郵件/企業微信/飛書）
 
 **零成本部署** · GitHub Actions 免費運行 · 無需伺服器
 
 [**功能特性**](#-功能特性) · [**快速開始**](#-快速開始) · [**推送效果**](#-推送效果) · [**完整指南**](full-guide.md) · [**常見問題**](FAQ.md) · [**更新日誌**](CHANGELOG.md)
 
- 繁體中文[English] | (../README_EN.md) | [简体中文](../README.md)
+ 繁體中文 | [English](../README_EN.md) | [简体中文](../README.md)
 
 </div>
 
@@ -42,10 +42,11 @@
 | AI | 決策儀表盤 | 一句話核心結論 + 精確買賣點位 + 操作檢查清單 |
 | 分析 | 多維度分析 | 技術面 + 籌碼分布 + 輿情情報 + 實時行情 |
 | 市場 | 全球市場 | 支援 A股、港股、美股 |
+| 補全 | 智慧補全 (MVP) | **[測試階段]** 首頁搜尋框支援代碼 / 名稱 / 拼音 / 別名聯想；本地索引已覆蓋 A股、港股、美股，並可透過 Tushare 或 AkShare 重新生成 |
 | 復盤 | 大盤復盤 | 每日市場概覽、板塊漲跌、北向資金 |
 | 回測 | AI 回測驗證 | 自動評估歷史分析準確率，方向勝率、止盈止損命中率 |
 | **Agent 問股** | **策略對話** | **多輪策略問答，支援 11 種內建策略（Web/Bot/API）** |
-| 推送 | 多渠道通知 | Telegram、Discord、郵件、企業微信、飛書等 |
+| 推送 | 多渠道通知 | Telegram、Discord、Slack、郵件、企業微信、飛書等 |
 | 自動化 | 定時運行 | GitHub Actions 定時執行，無需伺服器 |
 
 ### 技術棧與數據來源
@@ -101,6 +102,9 @@
 | `DISCORD_WEBHOOK_URL` | Discord Webhook URL | 可選 |
 | `DISCORD_BOT_TOKEN` | Discord Bot Token（與 Webhook 二選一） | 可選 |
 | `DISCORD_MAIN_CHANNEL_ID` | Discord Channel ID（使用 Bot 時需要） | 可選 |
+| `SLACK_BOT_TOKEN` | Slack Bot Token（推薦，支援圖片上傳；同時配置時優先於 Webhook） | 可選 |
+| `SLACK_CHANNEL_ID` | Slack Channel ID（使用 Bot 時需要） | 可選 |
+| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook URL（僅文字，不支援圖片） | 可選 |
 | `EMAIL_SENDER` | 發件人郵箱（如 `xxx@qq.com`） | 可選 |
 | `EMAIL_PASSWORD` | 郵箱授權碼（非登錄密碼） | 可選 |
 | `EMAIL_RECEIVERS` | 收件人郵箱（多個用逗號分隔，留空則發給自己） | 可選 |
@@ -112,6 +116,7 @@
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定義 Webhook 的 Bearer Token（用於需要認證的 Webhook） | 可選 |
 | `SINGLE_STOCK_NOTIFY` | 單股推送模式：設為 `true` 則每分析完一隻股票立即推送 | 可選 |
 | `REPORT_TYPE` | 報告類型：`simple`(精簡) 或 `full`(完整)，Docker環境推薦設為 `full` | 可選 |
+| `REPORT_LANGUAGE` | 報告輸出語言：`zh`(預設中文) / `en`(英文)；會同步影響 Prompt、Markdown 模板、通知 fallback 與 Web 報告頁固定文案 | 可選 |
 | `ANALYSIS_DELAY` | 個股分析和大盤分析之間的延遲（秒），避免API限流，如 `10` | 可選 |
 
 > 至少配置一個渠道，配置多個則同時推送。更多配置請參考 [完整指南](full-guide.md)
@@ -128,10 +133,14 @@
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索優化，支持AI摘要，多個key用逗號分隔） | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隱私優先，美股優化，多個key用逗號分隔） | 可選 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 備用搜索 | 可選 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建實例（無配額兜底，需在 settings.yml 啟用 format: json）；留空時預設自動發現公共實例 | 可選 |
+| `SEARXNG_PUBLIC_INSTANCES_ENABLED` | 是否在 `SEARXNG_BASE_URLS` 為空時自動從 `searx.space` 取得公共實例（預設 `true`） | 可選 |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638 ) Token | 可選 |
-| `AGENT_MODE` | 啟用 Agent 策略問股模式（`true`/`false`，預設 `false`） | 可選 |
+| `AGENT_MODE` | 啟用 Agent 策略問股模式（內部統一命名為 skill，`true`/`false`，預設 `false`） | 可選 |
+| `AGENT_LITELLM_MODEL` | Agent 專用主模型（可選）；留空時繼承 `LITELLM_MODEL`，無 provider 前綴時按 `openai/<model>` 解析 | 可選 |
 | `AGENT_MAX_STEPS` | Agent 最大推理步數（預設 `10`） | 可選 |
-| `AGENT_STRATEGY_DIR` | 自訂策略目錄（預設內建 `strategies/`） | 可選 |
+| `AGENT_SKILLS` | 逗號分隔的策略技能 id。留空時使用 metadata 宣告的主預設策略 skill（內建預設為 `bull_trend`）；使用 `all` 可啟用所有已載入策略技能。 | 可選 |
+| `AGENT_SKILL_DIR` | 自訂策略技能目錄（預設沿用內建 `strategies/` 相容路徑） | 可選 |
 
 #### 3. 啟用 Actions
 
@@ -210,7 +219,7 @@
 - 📝 **配置管理** - 查看/修改自選股列表
 - 🚀 **快速分析** - 通過 API 接口觸發分析
 - 📊 **實時進度** - 分析任務狀態實時更新，支持多任務並行
-- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可在 `/chat` 進行多輪問答
+- 🤖 **Agent 策略對話** - 啟用 `AGENT_MODE=true` 後可使用 `/ask`、`/chat`、`/history`、`/strategies`、`/research` 進行問答、查歷史、查看策略與深度研究
 - 📈 **回測驗證** - 評估歷史分析準確率，查詢方向勝率與模擬收益
 
 ### API 接口
@@ -225,11 +234,23 @@
 | `/api/v1/backtest/results` | GET | 查詢回測結果（分頁） |
 | `/api/v1/backtest/performance` | GET | 獲取整體回測表現 |
 | `/api/v1/backtest/performance/{code}` | GET | 獲取單股回測表現 |
-| `/api/v1/agent/strategies` | GET | 取得可用策略清單（內建/自訂） |
+| `/api/v1/agent/skills` | GET | 取得可用策略技能清單（內建/自訂） |
 | `/api/v1/agent/chat/stream` | POST (SSE) | Agent 多輪策略對話（流式） |
 | `/api/health` | GET | 健康檢查 |
 
 > 備註：`POST /api/v1/analysis/analyze` 在 `async_mode=false` 時僅支援單一股票；批量 `stock_codes` 需使用 `async_mode=true`。異步 `202` 對單股回傳 `task_id`，對批量回傳 `accepted` / `duplicates` 匯總。
+
+## 🔎 智慧搜尋補全 (MVP)
+
+首頁分析輸入框現已升級為類搜尋引擎的補全框，降低手動記憶股票代碼的負擔。
+
+- **多維匹配**：支援股票代碼、公司名稱、拼音縮寫與別名（例如 `gzmt` -> 貴州茅台、`tencent` -> 騰訊控股、`aapl` -> Apple Inc.）。
+- **多市場覆蓋**：本地索引已覆蓋 **A股、港股、美股** 三個市場；需要時可基於 Tushare 或 AkShare 資料重新生成。
+- **自動降級**：
+  - 若索引尚未更新、缺少新上市標的，或載入失敗，介面會自動退回一般手動輸入模式，不阻斷分析流程。
+  - 若補全未命中，直接按 Enter 仍會送出原始輸入。
+
+> 提示：如需更新索引，可先執行 `python3 scripts/fetch_tushare_stock_list.py` 更新股票列表 CSV，再執行 `python3 scripts/generate_index_from_csv.py` 重新生成靜態索引。
 
 ## 項目結構
 
@@ -290,15 +311,9 @@ daily_stock_analysis/
 
 ## ☕ 支持項目
 
-<div align="center">
-  <a href="https://ko-fi.com/mumu157" target="_blank">
-    <img src="https://storage.ko-fi.com/cdn/kofi3.png?v=3" alt="Buy Me a Coffee at ko-fi.com" style="height: 40px !important;">
-  </a>
-</div>
-
-| 支付寶 (Alipay) | 微信支付 (WeChat) | Ko-fi |
+| 支付寶 (Alipay) | 微信支付 (WeChat) | 小紅書 |
 | :---: | :---: | :---: |
-| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <a href="https://ko-fi.com/mumu157" target="_blank"><img src="../sources/ko-fi.png" width="200" alt="Ko-fi"></a> |
+| <img src="../sources/alipay.jpg" width="200" alt="Alipay"> | <img src="../sources/wechatpay.jpg" width="200" alt="WeChat Pay"> | <img src="../sources/xiaohongshu.png" width="200" alt="小紅書"> |
 
 ## 貢獻
 

@@ -315,6 +315,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             query_id=query_id,
             code="600519",
             payload={
+                "belong_boards": [{"name": "白酒", "type": "行业"}],
+                "boards": {
+                    "data": {
+                        "top": [{"name": "白酒", "change_pct": 2.6}],
+                        "bottom": [],
+                    }
+                },
                 "earnings": {
                     "data": {
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
@@ -333,6 +340,48 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
         self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
         self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
+        self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+
+    def test_history_detail_preserves_unavailable_board_rankings_state(self) -> None:
+        """Failed board ranking blocks should remain unavailable in detail response."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        query_id = "query_fundamental_failed_boards_001"
+        saved = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        fallback_fundamental = {
+            "belong_boards": [{"name": "白酒", "type": "行业"}],
+            "boards": {
+                "status": "failed",
+                "data": {},
+            },
+        }
+        saved_snapshot = self.db.save_fundamental_snapshot(
+            query_id=query_id,
+            code="600519",
+            payload=fallback_fundamental,
+        )
+        self.assertEqual(saved_snapshot, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
+        self.assertIsNone(report.details.sector_rankings)
 
     def test_history_detail_returns_null_fundamental_fields_when_snapshot_absent(self) -> None:
         """Detail API should keep new fields nullable when no context/fundamental snapshot exists."""
@@ -359,6 +408,189 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         report = get_history_detail(str(record_id), db_manager=self.db)
         self.assertIsNone(report.details.financial_report)
         self.assertIsNone(report.details.dividend_metrics)
+        self.assertEqual(report.details.belong_boards, [])
+        self.assertIsNone(report.details.sector_rankings)
+
+    def test_history_detail_returns_empty_related_boards_for_non_cn(self) -> None:
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=65,
+            trend_prediction="Bullish",
+            operation_advice="Hold",
+            analysis_summary="US stock test",
+        )
+        query_id = "query_non_cn_board_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.details.belong_boards, [])
+        self.assertIsNone(report.details.sector_rankings)
+
+    def test_history_markdown_localizes_english_report_and_placeholder_name(self) -> None:
+        """History markdown should preserve report_language for English reports."""
+        result = AnalysisResult(
+            code="AAPL",
+            name="股票AAPL",
+            sentiment_score=78,
+            trend_prediction="Bullish",
+            operation_advice="Buy",
+            analysis_summary="Momentum remains constructive.",
+            report_language="en",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "Favor buying on pullbacks.",
+                    "position_advice": {
+                        "no_position": "Open a starter position.",
+                        "has_position": "Hold and trail the stop.",
+                    },
+                },
+                "intelligence": {
+                    "risk_alerts": [],
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "180-182",
+                        "stop_loss": "172",
+                        "take_profit": "195",
+                    }
+                },
+            },
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_english_markdown_001",
+            report_type="full",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_english_markdown_001"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+
+        self.assertIsNotNone(markdown)
+        self.assertIn("Stock Analysis Report", markdown)
+        self.assertIn("Core Conclusion", markdown)
+        self.assertIn("Unnamed Stock (AAPL)", markdown)
+        self.assertNotIn("核心结论", markdown)
+
+    def test_history_detail_localizes_english_summary_fields(self) -> None:
+        """History detail should localize summary enums for English reports."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = AnalysisResult(
+            code="AAPL",
+            name="股票AAPL",
+            sentiment_score=78,
+            trend_prediction="看多",
+            operation_advice="买入",
+            analysis_summary="Momentum remains constructive.",
+            report_language="en",
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_english_detail_001",
+            report_type="full",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_english_detail_001"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+
+        self.assertEqual(report.meta.report_language, "en")
+        self.assertEqual(report.meta.stock_name, "Unnamed Stock")
+        self.assertEqual(report.summary.operation_advice, "Buy")
+        self.assertEqual(report.summary.trend_prediction, "Bullish")
+        self.assertEqual(report.summary.sentiment_label, "Bullish")
+
+    def test_history_markdown_uses_safe_bias_emoji_for_english_status(self) -> None:
+        """English bias status should keep the correct non-risk emoji in markdown."""
+        result = AnalysisResult(
+            code="AAPL",
+            name="股票AAPL",
+            sentiment_score=80,
+            trend_prediction="Bullish",
+            operation_advice="Buy",
+            analysis_summary="Momentum remains constructive.",
+            report_language="en",
+            dashboard={
+                "data_perspective": {
+                    "price_position": {
+                        "current_price": 190.5,
+                        "ma5": 188.0,
+                        "ma10": 184.5,
+                        "ma20": 179.2,
+                        "bias_ma5": 1.33,
+                        "bias_status": "Safe",
+                        "support_level": 184.5,
+                        "resistance_level": 195.0,
+                    }
+                }
+            },
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_english_markdown_bias_001",
+            report_type="full",
+            news_content="news",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_english_markdown_bias_001"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        markdown = HistoryService(self.db).get_markdown_report(str(record_id))
+
+        self.assertIsNotNone(markdown)
+        self.assertIn("✅Safe", markdown)
+        self.assertNotIn("🚨Safe", markdown)
 
     def test_delete_analysis_history_records_also_cleans_backtests(self) -> None:
         """删除历史记录时应一并清理关联回测结果。"""

@@ -6,6 +6,7 @@ interface CardProps {
   subtitle?: string;
   children: React.ReactNode;
   className?: string;
+  style?: React.CSSProperties;
   variant?: 'default' | 'bordered' | 'gradient';
   hoverable?: boolean;
   padding?: 'none' | 'sm' | 'md' | 'lg';
@@ -19,6 +20,7 @@ export const Card: React.FC<CardProps> = ({
   subtitle,
   children,
   className = '',
+  style,
   variant = 'default',
   hoverable = false,
   padding = 'md',
@@ -32,7 +34,7 @@ export const Card: React.FC<CardProps> = ({
 
   const variantStyles = {
     default: 'terminal-card',
-    bordered: 'terminal-card terminal-card-hover',
+    bordered: 'terminal-card',
     gradient: 'gradient-border-card',
   };
 
@@ -40,12 +42,12 @@ export const Card: React.FC<CardProps> = ({
 
   if (variant === 'gradient') {
     return (
-      <div className={cn(variantStyles.gradient, className)}>
+      <div className={cn(variantStyles.gradient, className)} style={style}>
         <div className={cn('gradient-border-card-inner', paddingStyles[padding])}>
           {(title || subtitle) && (
             <div className="mb-3">
               {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
-              {title ? <h3 className="mt-1 text-lg font-semibold text-white">{title}</h3> : null}
+              {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
             </div>
           )}
           {children}
@@ -56,12 +58,13 @@ export const Card: React.FC<CardProps> = ({
 
   return (
     <div
+      style={style}
       className={cn('rounded-2xl', variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
     >
       {(title || subtitle) && (
         <div className="mb-3">
           {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
-          {title ? <h3 className="mt-1 text-lg font-semibold text-white">{title}</h3> : null}
+          {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
         </div>
       )}
       {children}

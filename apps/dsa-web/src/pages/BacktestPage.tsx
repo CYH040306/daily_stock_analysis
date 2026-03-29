@@ -1,14 +1,20 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
+import { Check, Minus, X } from 'lucide-react';
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
-import { ApiErrorAlert, Card, Badge, Pagination } from '../components/common';
+import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
 import type {
   BacktestResultItem,
   BacktestRunResponse,
   PerformanceMetrics,
 } from '../types/backtest';
+
+const BACKTEST_INPUT_CLASS =
+  'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
+const BACKTEST_COMPACT_INPUT_CLASS =
+  'input-surface input-focus-glow h-10 rounded-xl border bg-transparent px-3 py-2 text-xs transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
 
 // ============ Helpers ============
 
@@ -45,17 +51,47 @@ function statusBadge(status: string) {
 }
 
 function boolIcon(value?: boolean | null) {
-  if (value === true) return <span className="text-emerald-400">&#10003;</span>;
-  if (value === false) return <span className="text-red-400">&#10007;</span>;
-  return <span className="text-muted-text">--</span>;
+  if (value === true) {
+    return (
+      <span
+        className="backtest-status-chip backtest-status-chip-success"
+        aria-label="yes"
+      >
+        <StatusDot tone="success" className="backtest-status-chip-dot" />
+        <Check className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+
+  if (value === false) {
+    return (
+      <span
+        className="backtest-status-chip backtest-status-chip-danger"
+        aria-label="no"
+      >
+        <StatusDot tone="danger" className="backtest-status-chip-dot" />
+        <X className="h-3.5 w-3.5" />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="backtest-status-chip backtest-status-chip-neutral"
+      aria-label="unknown"
+    >
+      <StatusDot tone="neutral" className="backtest-status-chip-dot" />
+      <Minus className="h-3.5 w-3.5" />
+    </span>
+  );
 }
 
 // ============ Metric Row ============
 
 const MetricRow: React.FC<{ label: string; value: string; accent?: boolean }> = ({ label, value, accent }) => (
-  <div className="flex items-center justify-between border-b border-white/5 py-1.5 last:border-0">
-    <span className="text-xs text-secondary-text">{label}</span>
-    <span className={`text-sm font-mono font-semibold ${accent ? 'text-cyan' : 'text-white'}`}>{value}</span>
+  <div className="backtest-metric-row">
+    <span className="label">{label}</span>
+    <span className={`value ${accent ? 'accent' : ''}`}>{value}</span>
   </div>
 );
 
@@ -73,7 +109,7 @@ const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> 
     <MetricRow label="SL Trigger Rate" value={pct(metrics.stopLossTriggerRate)} />
     <MetricRow label="TP Trigger Rate" value={pct(metrics.takeProfitTriggerRate)} />
     <MetricRow label="Avg Days to Hit" value={metrics.avgDaysToFirstHit != null ? metrics.avgDaysToFirstHit.toFixed(1) : '--'} />
-    <div className="mt-3 pt-2 border-t border-border/40 flex items-center justify-between">
+    <div className="backtest-metric-footer">
       <span className="text-xs text-muted-text">Evaluations</span>
       <span className="text-xs text-secondary-text font-mono">
         {Number(metrics.completedCount)} / {Number(metrics.totalEvaluations)}
@@ -82,11 +118,11 @@ const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> 
     <div className="flex items-center justify-between">
       <span className="text-xs text-muted-text">W / L / N</span>
       <span className="text-xs font-mono">
-        <span className="text-emerald-400">{metrics.winCount}</span>
+        <span className="text-success">{metrics.winCount}</span>
         {' / '}
-        <span className="text-red-400">{metrics.lossCount}</span>
+        <span className="text-danger">{metrics.lossCount}</span>
         {' / '}
-        <span className="text-amber-400">{metrics.neutralCount}</span>
+        <span className="text-warning">{metrics.neutralCount}</span>
       </span>
     </div>
   </Card>
@@ -95,13 +131,13 @@ const PerformanceCard: React.FC<{ metrics: PerformanceMetrics; title: string }> 
 // ============ Run Summary ============
 
 const RunSummary: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
-  <div className="flex items-center gap-4 rounded-lg border border-white/5 bg-elevated px-3 py-2 text-xs font-mono animate-fade-in">
-    <span className="text-secondary-text">Processed: <span className="text-white">{data.processed}</span></span>
-    <span className="text-secondary-text">Saved: <span className="text-cyan">{data.saved}</span></span>
-    <span className="text-secondary-text">Completed: <span className="text-emerald-400">{data.completed}</span></span>
-    <span className="text-secondary-text">Insufficient: <span className="text-amber-400">{data.insufficient}</span></span>
+  <div className="backtest-summary animate-fade-in">
+    <span className="label">Processed: <span className="value">{data.processed}</span></span>
+    <span className="label">Saved: <span className="value primary">{data.saved}</span></span>
+    <span className="label">Completed: <span className="value success">{data.completed}</span></span>
+    <span className="label">Insufficient: <span className="value warning">{data.insufficient}</span></span>
     {data.errors > 0 && (
-      <span className="text-secondary-text">Errors: <span className="text-red-400">{data.errors}</span></span>
+      <span className="label">Errors: <span className="value danger">{data.errors}</span></span>
     )}
   </div>
 );
@@ -250,7 +286,7 @@ const BacktestPage: React.FC = () => {
               onKeyDown={handleKeyDown}
               placeholder="Filter by stock code (leave empty for all)"
               disabled={isRunning}
-              className="input-terminal w-full"
+              className={BACKTEST_INPUT_CLASS}
             />
           </div>
           <button
@@ -261,7 +297,7 @@ const BacktestPage: React.FC = () => {
           >
             Filter
           </button>
-          <div className="flex items-center gap-1 whitespace-nowrap">
+          <div className="flex items-center gap-2 whitespace-nowrap lg:w-40 lg:justify-between">
             <span className="text-xs text-muted-text">Window</span>
             <input
               type="number"
@@ -271,27 +307,16 @@ const BacktestPage: React.FC = () => {
               onChange={(e) => setEvalDays(e.target.value)}
               placeholder="10"
               disabled={isRunning}
-              className="input-terminal w-14 text-center text-xs py-2"
+              className={`${BACKTEST_COMPACT_INPUT_CLASS} w-24 text-center tabular-nums`}
             />
           </div>
           <button
             type="button"
             onClick={() => setForceRerun(!forceRerun)}
             disabled={isRunning}
-            className={`
-              flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-              transition-all duration-200 whitespace-nowrap border cursor-pointer
-              ${forceRerun
-                ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
-                : 'border-white/10 bg-transparent text-muted-text hover:border-white/20 hover:text-secondary-text'
-              }
-              disabled:opacity-50 disabled:cursor-not-allowed
-            `}
+            className={`backtest-force-btn ${forceRerun ? 'active' : ''}`}
           >
-            <span className={`
-              inline-block w-1.5 h-1.5 rounded-full transition-colors duration-200
-              ${forceRerun ? 'bg-cyan shadow-[0_0_4px_rgba(0,212,255,0.6)]' : 'bg-border'}
-            `} />
+            <span className="dot" />
             Force
           </button>
           <button
@@ -329,16 +354,16 @@ const BacktestPage: React.FC = () => {
         <div className="flex max-h-[38vh] flex-col gap-3 overflow-y-auto lg:max-h-none lg:w-60 lg:flex-shrink-0">
           {isLoadingPerf ? (
             <div className="flex items-center justify-center py-8">
-              <div className="w-8 h-8 border-2 border-cyan/20 border-t-cyan rounded-full animate-spin" />
+              <div className="backtest-spinner sm" />
             </div>
           ) : overallPerf ? (
             <PerformanceCard metrics={overallPerf} title="Overall Performance" />
           ) : (
-            <Card padding="md">
-              <p className="text-xs text-muted-text text-center py-4">
-                No backtest data yet. Run a backtest to see performance metrics.
-              </p>
-            </Card>
+            <EmptyState
+              title="No Metrics Yet"
+              description="Run a backtest to generate portfolio-level performance metrics."
+              className="h-full min-h-[12rem] border-dashed bg-card/45 shadow-none"
+            />
           )}
 
           {stockPerf && (
@@ -353,68 +378,81 @@ const BacktestPage: React.FC = () => {
           ) : null}
           {isLoadingResults ? (
             <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />
+              <div className="backtest-spinner md" />
               <p className="mt-3 text-secondary-text text-sm">Loading results...</p>
             </div>
           ) : results.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 text-center">
-              <div className="w-12 h-12 mb-3 rounded-xl bg-elevated flex items-center justify-center">
-                <svg className="w-6 h-6 text-muted-text" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <EmptyState
+              title="No Results"
+              description="Run a backtest to evaluate historical analysis accuracy"
+              className="backtest-empty-state border-dashed"
+              icon={(
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                 </svg>
-              </div>
-              <h3 className="text-base font-medium text-foreground mb-1.5">No Results</h3>
-              <p className="text-xs text-muted-text max-w-xs">
-                Run a backtest to evaluate historical analysis accuracy
-              </p>
-            </div>
+              )}
+            />
           ) : (
             <div className="animate-fade-in">
-              <div className="overflow-x-auto rounded-xl border border-white/6 bg-card/72">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="bg-elevated text-left">
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Code</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Date</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Advice</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Dir.</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Outcome</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-right">Return%</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">SL</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider text-center">TP</th>
-                      <th className="px-3 py-2.5 text-xs font-medium text-secondary-text uppercase tracking-wider">Status</th>
+              <div className="backtest-table-toolbar">
+                <div className="backtest-table-toolbar-meta">
+                  <span className="label-uppercase">Result Set</span>
+                  <span className="text-xs text-secondary-text">
+                    {codeFilter.trim() ? `Filtered by ${codeFilter.trim()}` : 'All stocks'}
+                    {evalDays ? ` · ${evalDays} day window` : ''}
+                  </span>
+                </div>
+                <span className="backtest-table-scroll-hint">Scroll horizontally on small screens</span>
+              </div>
+              <div className="backtest-table-wrapper">
+                <table className="backtest-table min-w-[760px] w-full text-sm">
+                  <thead className="backtest-table-head">
+                    <tr className="text-left">
+                      <th className="backtest-table-head-cell">Code</th>
+                      <th className="backtest-table-head-cell">Date</th>
+                      <th className="backtest-table-head-cell">Advice</th>
+                      <th className="backtest-table-head-cell">Dir.</th>
+                      <th className="backtest-table-head-cell">Outcome</th>
+                      <th className="backtest-table-head-cell text-right">Return%</th>
+                      <th className="backtest-table-head-cell text-center">SL</th>
+                      <th className="backtest-table-head-cell text-center">TP</th>
+                      <th className="backtest-table-head-cell">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {results.map((row) => (
                       <tr
                         key={row.analysisHistoryId}
-                        className="border-t border-white/5 transition-colors hover:bg-hover"
+                        className="backtest-table-row"
                       >
-                        <td className="px-3 py-2 font-mono text-cyan text-xs">{row.code}</td>
-                        <td className="px-3 py-2 text-xs text-secondary-text">{row.analysisDate || '--'}</td>
-                        <td className="px-3 py-2 text-xs text-foreground truncate max-w-[140px]" title={row.operationAdvice || ''}>
-                          {row.operationAdvice || '--'}
+                        <td className="backtest-table-cell backtest-table-code">{row.code}</td>
+                        <td className="backtest-table-cell text-secondary-text">{row.analysisDate || '--'}</td>
+                        <td className="backtest-table-cell max-w-[140px] text-foreground">
+                          {row.operationAdvice ? (
+                            <Tooltip content={row.operationAdvice} focusable>
+                              <span className="block truncate">{row.operationAdvice}</span>
+                            </Tooltip>
+                          ) : '--'}
                         </td>
-                        <td className="px-3 py-2 text-xs">
-                          <span className="flex items-center gap-1">
+                        <td className="backtest-table-cell">
+                          <span className="flex items-center gap-2">
                             {boolIcon(row.directionCorrect)}
                             <span className="text-muted-text">{row.directionExpected || ''}</span>
                           </span>
                         </td>
-                        <td className="px-3 py-2">{outcomeBadge(row.outcome)}</td>
-                        <td className="px-3 py-2 text-xs font-mono text-right">
+                        <td className="backtest-table-cell">{outcomeBadge(row.outcome)}</td>
+                        <td className="backtest-table-cell backtest-table-return text-right">
                           <span className={
                             row.simulatedReturnPct != null
-                              ? row.simulatedReturnPct > 0 ? 'text-emerald-400' : row.simulatedReturnPct < 0 ? 'text-red-400' : 'text-secondary-text'
+                              ? row.simulatedReturnPct > 0 ? 'text-success' : row.simulatedReturnPct < 0 ? 'text-danger' : 'text-secondary-text'
                               : 'text-muted-text'
                           }>
                             {pct(row.simulatedReturnPct)}
                           </span>
                         </td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitStopLoss)}</td>
-                        <td className="px-3 py-2 text-center">{boolIcon(row.hitTakeProfit)}</td>
-                        <td className="px-3 py-2">{statusBadge(row.evalStatus)}</td>
+                        <td className="backtest-table-cell text-center">{boolIcon(row.hitStopLoss)}</td>
+                        <td className="backtest-table-cell text-center">{boolIcon(row.hitTakeProfit)}</td>
+                        <td className="backtest-table-cell">{statusBadge(row.evalStatus)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -431,7 +469,7 @@ const BacktestPage: React.FC = () => {
               </div>
 
               <p className="text-xs text-muted-text text-center mt-2">
-                {totalResults} result{totalResults !== 1 ? 's' : ''} total
+                {totalResults} result{totalResults !== 1 ? 's' : ''} total · page {currentPage} of {Math.max(totalPages, 1)}
               </p>
             </div>
           )}
