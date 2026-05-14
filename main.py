@@ -149,8 +149,8 @@ def _setup_runtime_logging(log_dir: str, debug: bool = False) -> bool:
     except OSError as exc:
         logger.warning(
             "文件日志初始化失败，已降级为控制台日志输出；日志目录 %r 当前不可写或不可创建: %s。"
-            "Docker bind mount 请确保宿主机 data/logs/reports 目录可由容器内 UID 1000 写入，"
-            "例如执行 `sudo chown -R 1000:1000 data logs reports` 后重启容器。",
+            "官方 Docker 镜像启动入口会自动修复默认挂载目录权限；若仍失败，"
+            "请检查是否使用了 --user、只读挂载、rootless Docker 或 NFS 等限制写入的环境。",
             log_dir,
             exc,
         )

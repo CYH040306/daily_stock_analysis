@@ -523,7 +523,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
         output = capture_stream.getvalue()
         self.assertIn("文件日志初始化失败，已降级为控制台日志输出", output)
         self.assertIn("/app/logs", output)
-        self.assertIn("sudo chown -R 1000:1000 data logs reports", output)
+        self.assertIn("官方 Docker 镜像启动入口会自动修复默认挂载目录权限", output)
 
     def test_run_full_analysis_import_failure_propagates(self) -> None:
         """P1: import failures in run_full_analysis must propagate, not be swallowed."""
