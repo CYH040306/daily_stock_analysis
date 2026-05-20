@@ -20,6 +20,34 @@ const rules: AlertRuleItem[] = [
     createdAt: '2026-05-18T09:00:00',
     updatedAt: '2026-05-18T09:30:00',
   },
+  {
+    id: 2,
+    name: 'MACD 金叉',
+    targetScope: 'single_symbol',
+    target: '300750',
+    alertType: 'macd_cross',
+    parameters: { direction: 'bullish_cross', fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 },
+    severity: 'info',
+    enabled: true,
+    source: 'api',
+    cooldownActive: false,
+    createdAt: '2026-05-18T09:00:00',
+    updatedAt: '2026-05-18T09:30:00',
+  },
+  {
+    id: 3,
+    name: 'KDJ 死叉',
+    targetScope: 'single_symbol',
+    target: '000001',
+    alertType: 'kdj_cross',
+    parameters: { direction: 'bearish_cross', period: 9, kPeriod: 3, dPeriod: 3 },
+    severity: 'warning',
+    enabled: true,
+    source: 'api',
+    cooldownActive: false,
+    createdAt: '2026-05-18T09:00:00',
+    updatedAt: '2026-05-18T09:30:00',
+  },
 ];
 
 describe('AlertRuleList', () => {
@@ -61,6 +89,9 @@ describe('AlertRuleList', () => {
     expect(screen.getByText('600519')).toBeInTheDocument();
     expect(screen.getAllByText('价格突破').length).toBeGreaterThan(0);
     expect(screen.getByText('上破 1800')).toBeInTheDocument();
+    expect(screen.getAllByText('MACD 金叉/死叉').length).toBeGreaterThan(0);
+    expect(screen.getByText('MACD(12,26,9) 金叉')).toBeInTheDocument();
+    expect(screen.getByText('KDJ(9,3,3) 死叉')).toBeInTheDocument();
     expect(screen.getByText('冷却中')).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('启停状态'), { target: { value: 'enabled' } });
@@ -89,8 +120,8 @@ describe('AlertRuleList', () => {
   it('runs test and toggles enabled state', () => {
     renderList();
 
-    fireEvent.click(screen.getByRole('button', { name: '测试' }));
-    fireEvent.click(screen.getByRole('button', { name: '停用' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '测试' })[0]);
+    fireEvent.click(screen.getAllByRole('button', { name: '停用' })[0]);
 
     expect(onTest).toHaveBeenCalledWith(rules[0]);
     expect(onToggleEnabled).toHaveBeenCalledWith(rules[0]);
@@ -99,7 +130,7 @@ describe('AlertRuleList', () => {
   it('shows loading text only for the active rule operation', () => {
     renderList({ busyRule: { id: 1, action: 'toggle' } });
 
-    expect(screen.getByRole('button', { name: '测试' })).toBeDisabled();
+    expect(screen.getAllByRole('button', { name: '测试' })[0]).toBeDisabled();
     expect(screen.getByRole('button', { name: '停用中' })).toHaveAttribute('aria-busy', 'true');
     expect(screen.queryByRole('button', { name: '测试中' })).not.toBeInTheDocument();
   });

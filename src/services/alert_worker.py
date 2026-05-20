@@ -111,10 +111,11 @@ class AlertWorker:
             return stats
 
         monitor = EventMonitor()
+        daily_cache: Dict[tuple[str, int], Any] = {}
         for runtime_rule in runtime_rules:
             stats["evaluated"] += 1
             try:
-                result = asyncio.run(self.service._evaluate_rule(runtime_rule.rule, monitor))
+                result = asyncio.run(self.service._evaluate_rule(runtime_rule.rule, monitor, daily_cache=daily_cache))
             except Exception as exc:
                 result = {
                     "rule_id": self.service._runtime_rule_id(runtime_rule.rule),

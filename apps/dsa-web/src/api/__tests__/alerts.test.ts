@@ -111,6 +111,57 @@ describe('alertsApi', () => {
     expect(created.parameters.changePct).toBe(3);
   });
 
+  it('creates technical indicator rules with snake_case parameter fields', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        id: 4,
+        name: 'macd rule',
+        target_scope: 'single_symbol',
+        target: '600519',
+        alert_type: 'macd_cross',
+        parameters: {
+          direction: 'bullish_cross',
+          fast_period: 12,
+          slow_period: 26,
+          signal_period: 9,
+        },
+        severity: 'warning',
+        enabled: true,
+        source: 'api',
+      },
+    });
+
+    await alertsApi.createRule({
+      name: 'macd rule',
+      targetScope: 'single_symbol',
+      target: '600519',
+      alertType: 'macd_cross',
+      parameters: {
+        direction: 'bullish_cross',
+        fastPeriod: 12,
+        slowPeriod: 26,
+        signalPeriod: 9,
+      },
+      severity: 'warning',
+      enabled: true,
+    });
+
+    expect(post).toHaveBeenCalledWith('/api/v1/alerts/rules', {
+      name: 'macd rule',
+      target_scope: 'single_symbol',
+      target: '600519',
+      alert_type: 'macd_cross',
+      parameters: {
+        direction: 'bullish_cross',
+        fast_period: 12,
+        slow_period: 26,
+        signal_period: 9,
+      },
+      severity: 'warning',
+      enabled: true,
+    });
+  });
+
   it('deletes, toggles, tests, and lists history endpoints', async () => {
     deleteRequest.mockResolvedValueOnce({ data: { deleted: 1 } });
     post

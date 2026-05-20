@@ -25,12 +25,22 @@ const ALERT_TYPE_FILTER_OPTIONS = [
   { value: 'price_cross', label: '价格突破' },
   { value: 'price_change_percent', label: '涨跌幅' },
   { value: 'volume_spike', label: '成交量放大' },
+  { value: 'ma_price_cross', label: '价格均线穿越' },
+  { value: 'rsi_threshold', label: 'RSI 阈值' },
+  { value: 'macd_cross', label: 'MACD 金叉/死叉' },
+  { value: 'kdj_cross', label: 'KDJ 金叉/死叉' },
+  { value: 'cci_threshold', label: 'CCI 阈值' },
 ];
 
 const typeLabel: Record<AlertType, string> = {
   price_cross: '价格突破',
   price_change_percent: '涨跌幅',
   volume_spike: '成交量放大',
+  ma_price_cross: '价格均线穿越',
+  rsi_threshold: 'RSI 阈值',
+  macd_cross: 'MACD 金叉/死叉',
+  kdj_cross: 'KDJ 金叉/死叉',
+  cci_threshold: 'CCI 阈值',
 };
 
 const severityLabel: Record<string, string> = {
@@ -46,7 +56,23 @@ function formatParameters(rule: AlertRuleItem): string {
   if (rule.alertType === 'price_change_percent') {
     return `${rule.parameters.direction === 'down' ? '下跌' : '上涨'} ${rule.parameters.changePct ?? '--'}%`;
   }
-  return `${rule.parameters.multiplier ?? '--'}x`;
+  if (rule.alertType === 'volume_spike') {
+    return `${rule.parameters.multiplier ?? '--'}x`;
+  }
+  if (rule.alertType === 'ma_price_cross') {
+    return `${rule.parameters.direction === 'below' ? '下穿' : '上穿'} MA${rule.parameters.window ?? '--'}`;
+  }
+  if (rule.alertType === 'rsi_threshold') {
+    return `RSI${rule.parameters.period ?? '--'} ${rule.parameters.direction === 'below' ? '下穿' : '上穿'} ${rule.parameters.threshold ?? '--'}`;
+  }
+  if (rule.alertType === 'macd_cross' || rule.alertType === 'kdj_cross') {
+    const direction = rule.parameters.direction === 'bearish_cross' ? '死叉' : '金叉';
+    if (rule.alertType === 'macd_cross') {
+      return `MACD(${rule.parameters.fastPeriod ?? '--'},${rule.parameters.slowPeriod ?? '--'},${rule.parameters.signalPeriod ?? '--'}) ${direction}`;
+    }
+    return `KDJ(${rule.parameters.period ?? '--'},${rule.parameters.kPeriod ?? '--'},${rule.parameters.dPeriod ?? '--'}) ${direction}`;
+  }
+  return `CCI${rule.parameters.period ?? '--'} ${rule.parameters.direction === 'below' ? '下穿' : '上穿'} ${rule.parameters.threshold ?? '--'}`;
 }
 
 function isCoolingDown(rule: AlertRuleItem): boolean {

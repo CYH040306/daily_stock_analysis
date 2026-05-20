@@ -177,3 +177,41 @@ def test_alerts_doc_defines_p4_notification_and_cooldown_scope() -> None:
         "最小回滚方式是 revert P4 PR",
     ):
         assert token in doc
+
+
+def test_alerts_doc_defines_p5_indicator_scope() -> None:
+    doc = _read_doc()
+
+    for token in (
+        "## P5 技术指标规则",
+        "ma_price_cross",
+        "rsi_threshold",
+        "macd_cross",
+        "kdj_cross",
+        "cci_threshold",
+        "compute_required_bars",
+        "requested_days",
+        "required_bars > 365",
+        "最近两根已收盘日线",
+        "prev <= threshold < current",
+        "Wilder",
+        "SMMA",
+        "alpha=1/period",
+        "EMA(fast_period)",
+        "alpha=1/k_period",
+        "0.015 * mean_deviation",
+        "服务器本地时区启发式",
+        "16:00",
+        "日期不可判定都会保守丢弃",
+        "legacy JSON 路径",
+        "不扩展 `src/agent/events.py`",
+        "HTTP 400 + `validation_error`",
+        "HTTP 400 + `unsupported_alert_type`",
+        "不支持 MACD 柱体放大/收缩",
+        "不支持 KDJ 超买/超卖区规则",
+        "不支持 MA 与 MA 双均线交叉",
+        "不支持分钟线",
+        "revert P5 PR",
+        "skip unsupported `alert_type`",
+    ):
+        assert token in doc

@@ -70,6 +70,74 @@ describe('AlertRuleForm', () => {
     });
   });
 
+  it('submits technical indicator rule payloads', async () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'macd_cross' } });
+    fireEvent.change(screen.getByLabelText('交叉方向'), { target: { value: 'bearish_cross' } });
+    fireEvent.change(screen.getByLabelText('快线周期'), { target: { value: '6' } });
+    fireEvent.change(screen.getByLabelText('慢线周期'), { target: { value: '13' } });
+    fireEvent.change(screen.getByLabelText('信号周期'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+        target: '600519',
+        alertType: 'macd_cross',
+        parameters: {
+          direction: 'bearish_cross',
+          fastPeriod: 6,
+          slowPeriod: 13,
+          signalPeriod: 5,
+        },
+      }));
+    });
+  });
+
+  it('rejects invalid technical indicator boundaries before submit', () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'rsi_threshold' } });
+    fireEvent.change(screen.getByLabelText('RSI 阈值'), { target: { value: '200' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('RSI 阈值必须在 0 到 100 之间');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('rejects indicator period combinations that exceed fetchable history', () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'macd_cross' } });
+    fireEvent.change(screen.getByLabelText('快线周期'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('慢线周期'), { target: { value: '250' } });
+    fireEvent.change(screen.getByLabelText('信号周期'), { target: { value: '250' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('MACD 周期组合需要 501 根日线，最多支持 365 根');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty required technical indicator thresholds before submit', () => {
+    render(<AlertRuleForm onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByLabelText('标的代码'), { target: { value: '600519' } });
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'rsi_threshold' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('RSI 阈值不能为空');
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('规则类型'), { target: { value: 'cci_threshold' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建规则' }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('CCI 阈值不能为空');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid numeric thresholds before submit', () => {
     render(<AlertRuleForm onSubmit={onSubmit} />);
 
