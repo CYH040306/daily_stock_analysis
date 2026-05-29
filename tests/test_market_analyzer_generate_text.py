@@ -1262,6 +1262,12 @@ Sector text.
         assert snapshot["status"] == "red"
         assert snapshot["label"] == "偏防守"
         assert snapshot["score"] < 40
+        assert snapshot["region"] == "cn"
+        assert snapshot["trade_date"] == "2026-03-06"
+        assert snapshot["data_quality"] == "ok"
+        assert snapshot["dimensions"]["breadth"]["available"] is True
+        assert snapshot["dimensions"]["index"]["available"] is True
+        assert snapshot["dimensions"]["limit"]["available"] is True
         assert any("亏钱效应" in reason for reason in snapshot["reasons"])
 
     def test_market_light_snapshot_uses_english_labels_and_reasons(self):
@@ -1294,6 +1300,27 @@ Sector text.
             reason.startswith("advancers ratio ") and "downside pressure dominates" in reason
             for reason in snapshot["reasons"]
         )
+
+    def test_market_light_snapshot_marks_us_without_breadth_as_partial(self):
+        from src.core.market_profile import US_PROFILE
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="review")
+        ma.region = "us"
+        ma.profile = US_PROFILE
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-03-06",
+            indices=[MarketIndex(code="SPX", name="S&P 500", current=5000, change_pct=0.5)],
+        )
+
+        snapshot = ma.build_market_light_snapshot(overview)
+
+        assert snapshot["region"] == "us"
+        assert snapshot["data_quality"] == "partial"
+        assert snapshot["dimensions"]["breadth"] == {"score": 50, "available": False}
+        assert snapshot["dimensions"]["index"]["available"] is True
+        assert snapshot["dimensions"]["limit"] == {"score": 50, "available": False}
 
     def test_us_english_indices_do_not_label_turnover_as_cny(self):
         from src.core.market_profile import US_PROFILE

@@ -39,6 +39,8 @@ class RuntimeAlertRule:
     source: str
     severity: Optional[str] = None
     cooldown_policy: Optional[Dict[str, Any]] = None
+    effective_target: Optional[str] = None
+    display_target: Optional[str] = None
 
 
 @dataclass
@@ -46,6 +48,12 @@ class DBCooldownDecision:
     suppressed: bool = False
     fallback_key: Optional[str] = None
     fallback_ttl_seconds: Optional[int] = None
+
+
+@dataclass
+class TriggerWriteResult:
+    trigger_id: Optional[int] = None
+    created: bool = False
 
 
 class AlertWorker:
@@ -111,7 +119,7 @@ class AlertWorker:
             return stats
 
         monitor = EventMonitor()
-        daily_cache: Dict[tuple[str, int], Any] = {}
+        daily_cache: Dict[Any, Any] = {}
         for runtime_rule in runtime_rules:
             stats["evaluated"] += 1
             try:
@@ -131,8 +139,9 @@ class AlertWorker:
 
             record_status = result.get("record_status")
             if record_status in WRITABLE_TRIGGER_STATUSES:
-                trigger_id = self._record_trigger_safely(runtime_rule, result, record_status)
-                if trigger_id is not None:
+                trigger_write = self._record_trigger_safely(runtime_rule, result, record_status)
+                trigger_id = trigger_write.trigger_id
+                if trigger_write.created:
                     stats["recorded"] += 1
                 if record_status in stats and record_status != "triggered":
                     stats[record_status] += 1
@@ -172,23 +181,28 @@ class AlertWorker:
 
         for row in self.service.repo.list_enabled_rules(limit=ALERT_WORKER_RULE_LIMIT):
             try:
-                rule_data = self.service._serialize_rule_base(row)
-                key = self._semantic_key(
-                    rule_data["target_scope"],
-                    rule_data["target"],
-                    rule_data["alert_type"],
-                    rule_data["parameters"],
-                )
-                runtime_rules.append(
-                    RuntimeAlertRule(
-                        key=key,
-                        rule=self.service._to_runtime_rule(row, rule_data),
-                        source="db",
-                        severity=rule_data.get("severity"),
-                        cooldown_policy=rule_data.get("cooldown_policy"),
+                cooldown_policy = self.service._load_json(row.cooldown_policy, default=None)
+                for payload in self.service.build_runtime_payloads(row, config=config, include_overflow_payload=False):
+                    if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
+                        logger.warning(
+                            "[AlertWorker] Runtime rule limit reached at %s; skipping remaining expanded rules",
+                            ALERT_WORKER_RULE_LIMIT,
+                        )
+                        break
+                    runtime_rules.append(
+                        RuntimeAlertRule(
+                            key=payload.key,
+                            rule=payload.rule,
+                            source="db",
+                            severity=row.severity,
+                            cooldown_policy=cooldown_policy,
+                            effective_target=payload.effective_target,
+                            display_target=payload.display_target,
+                        )
                     )
-                )
-                seen_keys.add(key)
+                    seen_keys.add(payload.key)
+                if len(runtime_rules) >= ALERT_WORKER_RULE_LIMIT:
+                    break
             except Exception as exc:
                 logger.warning("[AlertWorker] Skip invalid persisted alert rule %s: %s", getattr(row, "id", "?"), exc)
 
@@ -250,7 +264,7 @@ class AlertWorker:
         canonical_params = json.dumps(parameters or {}, ensure_ascii=False, sort_keys=True)
         return f"{target_scope}:{target}:{alert_type}:{canonical_params}"
 
-    def _record_trigger(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any], status: str) -> Optional[int]:
+    def _record_trigger(self, runtime_rule: RuntimeAlertRule, result: Dict[str, Any], status: str) -> TriggerWriteResult:
         try:
             rule_id = int(result.get("rule_id") or 0) or None
         except (TypeError, ValueError):
@@ -258,7 +272,7 @@ class AlertWorker:
 
         fields = {
             "rule_id": rule_id,
-            "target": runtime_rule.rule.stock_code,
+            "target": self._effective_target(runtime_rule),
             "observed_value": self._optional_float(result.get("observed_value")),
             "threshold": self._optional_float(result.get("threshold")),
             "reason": result.get("reason") or result.get("message"),
@@ -267,24 +281,38 @@ class AlertWorker:
             "status": status,
             "diagnostics": self._diagnostics_for_status(status, result),
         }
-        row = self.service.repo.create_trigger(fields)
-        return int(row.id) if row and row.id is not None else None
+        if self._should_deduplicate_trigger(runtime_rule, fields):
+            row, created = self.service.repo.create_trigger_if_absent(fields)
+        else:
+            row = self.service.repo.create_trigger(fields)
+            created = True
+        trigger_id = int(row.id) if row and row.id is not None else None
+        return TriggerWriteResult(trigger_id=trigger_id, created=created)
 
     def _record_trigger_safely(
         self,
         runtime_rule: RuntimeAlertRule,
         result: Dict[str, Any],
         status: str,
-    ) -> Optional[int]:
+    ) -> TriggerWriteResult:
         try:
             return self._record_trigger(runtime_rule, result, status)
         except Exception as exc:
             logger.warning(
                 "[AlertWorker] Failed to record alert trigger for %s: %s",
-                getattr(runtime_rule.rule, "stock_code", "?"),
+                self._display_target(runtime_rule),
                 self.service._sanitize_text(str(exc) or "trigger write failed"),
             )
-            return None
+            return TriggerWriteResult()
+
+    @staticmethod
+    def _should_deduplicate_trigger(runtime_rule: RuntimeAlertRule, fields: Dict[str, Any]) -> bool:
+        return (
+            runtime_rule.source == "db"
+            and fields.get("status") == "triggered"
+            and fields.get("rule_id") is not None
+            and fields.get("data_timestamp") is not None
+        )
 
     @staticmethod
     def _optional_float(value: Any) -> Optional[float]:
@@ -298,7 +326,7 @@ class AlertWorker:
     @staticmethod
     def _diagnostics_for_status(status: str, result: Dict[str, Any]) -> Optional[str]:
         if status == "triggered":
-            return None
+            return result.get("diagnostics")
         return result.get("message") or result.get("reason")
 
     def _should_notify(self, rule_key: str, *, ttl_seconds: Optional[int] = None) -> bool:
@@ -340,7 +368,7 @@ class AlertWorker:
         from src.notification import NotificationBuilder, NotificationService
 
         notification_service = self.notifier or NotificationService()
-        title = f"Event Alert | {runtime_rule.rule.stock_code}"
+        title = f"Event Alert | {self._display_target(runtime_rule)}"
         content = result.get("reason") or result.get("message") or runtime_rule.rule.description or "Alert triggered"
         alert_text = NotificationBuilder.build_simple_alert(title=title, content=content, alert_type="warning")
 
@@ -355,7 +383,7 @@ class AlertWorker:
             sanitized = self.service._sanitize_text(str(exc) or "notification failed")
             logger.warning(
                 "[AlertWorker] Failed to send alert notification for %s: %s",
-                getattr(runtime_rule.rule, "stock_code", "?"),
+                self._display_target(runtime_rule),
                 sanitized,
             )
             return NotificationDispatchResult(
@@ -466,14 +494,14 @@ class AlertWorker:
         try:
             cooldown = self.service.repo.get_active_cooldown(
                 rule_id=rule_id,
-                target=runtime_rule.rule.stock_code,
+                target=self._effective_target(runtime_rule),
                 severity=runtime_rule.severity,
                 now=now_dt,
             )
         except Exception as exc:
             logger.warning(
                 "[AlertWorker] Failed to read alert cooldown for %s: %s",
-                getattr(runtime_rule.rule, "stock_code", "?"),
+                self._display_target(runtime_rule),
                 self.service._sanitize_text(str(exc) or "cooldown read failed"),
             )
             fallback_key = self._db_cooldown_fallback_key(runtime_rule.key)
@@ -549,7 +577,7 @@ class AlertWorker:
             self.service.repo.upsert_cooldown(
                 rule_id=rule_id,
                 rule_key=runtime_rule.key,
-                target=runtime_rule.rule.stock_code,
+                target=self._effective_target(runtime_rule),
                 severity=runtime_rule.severity,
                 last_triggered_at=now_dt,
                 cooldown_until=now_dt + timedelta(seconds=cooldown_seconds),
@@ -558,9 +586,17 @@ class AlertWorker:
         except Exception as exc:
             logger.warning(
                 "[AlertWorker] Failed to update alert cooldown for %s: %s",
-                getattr(runtime_rule.rule, "stock_code", "?"),
+                self._display_target(runtime_rule),
                 self.service._sanitize_text(str(exc) or "cooldown write failed"),
             )
+
+    @staticmethod
+    def _effective_target(runtime_rule: RuntimeAlertRule) -> str:
+        return str(runtime_rule.effective_target or getattr(runtime_rule.rule, "stock_code", "") or "?")
+
+    @staticmethod
+    def _display_target(runtime_rule: RuntimeAlertRule) -> str:
+        return str(runtime_rule.display_target or runtime_rule.effective_target or getattr(runtime_rule.rule, "stock_code", "") or "?")
 
     @staticmethod
     def _cooldown_seconds(runtime_rule: RuntimeAlertRule) -> int:

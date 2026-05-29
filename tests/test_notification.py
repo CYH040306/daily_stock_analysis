@@ -489,6 +489,34 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("*分析模型：gemini/gemini-2.5-flash*", out)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_collapses_unavailable_chip_structure(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            dashboard={
+                "data_perspective": {
+                    "chip_structure": {
+                        "profit_ratio": "数据缺失，无法判断",
+                        "avg_cost": "数据缺失，无法判断",
+                        "concentration": "数据缺失，无法判断",
+                        "chip_health": "数据缺失，无法判断",
+                    }
+                }
+            },
+        )
+
+        out = service.generate_dashboard_report([result], report_date="2026-02-01")
+
+        self.assertIn("**筹码**: 筹码分布未启用或数据源暂不可用，未纳入筹码判断。", out)
+        self.assertEqual(out.count("数据缺失，无法判断"), 0)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_reports_hide_model_when_disabled(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(
             report_renderer_enabled=False,
@@ -614,6 +642,423 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertIn("Core Conclusion", out)
         self.assertIn("Action Levels", out)
         self.assertIn("Hold", out)
+
+    def _make_fundamental_context(self) -> dict:
+        return {
+            "earnings": {
+                "status": "ok",
+                "data": {
+                    "financial_report": {
+                        "report_date": "2024-09-30",
+                        "revenue": 1_236_000_000_000.0,  # 1.236 万亿 -> 12360.00 亿元
+                        "net_profit_parent": 60_800_000_000.0,
+                        "operating_cash_flow": 72_500_000_000.0,
+                        "roe": 22.45,
+                    },
+                    "dividend": {
+                        "events": [
+                            {
+                                "event_date": "2024-06-26",
+                                "ex_dividend_date": "2024-06-26",
+                                "cash_dividend_per_share": 30.876,
+                                "is_pre_tax": True,
+                            }
+                        ],
+                        "ttm_event_count": 1,
+                        "ttm_cash_dividend_per_share": 30.876,
+                        "ttm_dividend_yield_pct": 1.85,
+                    },
+                },
+            },
+            "growth": {
+                "status": "ok",
+                "data": {
+                    "revenue_yoy": 15.23,
+                    "net_profit_yoy": 19.87,
+                    "roe": 22.45,
+                    "gross_margin": 91.55,
+                },
+            },
+            "boards": {
+                "status": "ok",
+                "data": {
+                    "top": [
+                        {"name": "白酒", "change_pct": 3.42},
+                        {"name": "食品饮料", "change_pct": 2.10},
+                    ],
+                    "bottom": [
+                        {"name": "光伏设备", "change_pct": -2.65},
+                    ],
+                },
+            },
+            "belong_boards": [
+                {"name": "白酒", "code": "BK0596", "type": "行业"},
+                {"name": "MSCI中国", "code": "BK0805", "type": "概念"},
+            ],
+        }
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_appends_fundamental_blocks(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = self._make_fundamental_context()
+
+        out = service.generate_single_stock_report(result)
+
+        # 财务摘要
+        self.assertIn("财务摘要", out)
+        self.assertIn("2024-09-30", out)
+        self.assertIn("12360.00 亿元", out)
+        self.assertIn("22.45%", out)
+        self.assertIn("15.23%", out)
+        self.assertIn("91.55%", out)
+        # 股东回报
+        self.assertIn("股东回报", out)
+        self.assertIn("30.8760 元", out)
+        self.assertIn("1.85%", out)
+        self.assertIn("2024-06-26", out)
+        # 关联板块（白酒带 sector 信号；MSCI中国 不在榜单 -> "--"）
+        self.assertIn("关联板块", out)
+        self.assertIn("白酒", out)
+        self.assertIn("领涨", out)
+        self.assertIn("+3.42%", out)
+        self.assertIn("MSCI中国", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_skips_fundamental_blocks_when_missing(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertNotIn("财务摘要", out)
+        self.assertNotIn("股东回报", out)
+        self.assertNotIn("关联板块", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_handles_partial_fundamental_context(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """Only dividend data present — render shareholder return, skip the other two."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {
+                "status": "partial",
+                "data": {
+                    "dividend": {
+                        "events": [],
+                        "ttm_event_count": 0,
+                        "ttm_cash_dividend_per_share": 0.5,
+                    }
+                },
+            },
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertNotIn("财务摘要", out)
+        self.assertIn("股东回报", out)
+        self.assertIn("0.5000 元", out)
+        self.assertNotIn("关联板块", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_uses_currency_for_us(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """USD currency on financial_report yields 亿美元 suffix instead of 亿元."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple Inc.",
+            sentiment_score=64,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="观望等待 AI 兑现节奏。",
+        )
+        result.fundamental_context = {
+            "earnings": {
+                "status": "ok",
+                "data": {
+                    "financial_report": {
+                        "report_date": "2026-03-31",
+                        "revenue": 1.11e11,
+                        "net_profit_parent": 2.95e10,
+                        "operating_cash_flow": 2.87e10,
+                        "roe": 141.47,
+                        "currency": "USD",
+                    },
+                    "dividend": {
+                        "events": [{
+                            "event_date": "2026-05-11",
+                            "ex_dividend_date": "2026-05-11",
+                            "cash_dividend_per_share": 0.27,
+                            "is_pre_tax": True,
+                        }],
+                        "ttm_event_count": 4,
+                        "ttm_cash_dividend_per_share": 1.05,
+                        "ttm_dividend_yield_pct": 0.36,
+                    },
+                },
+            },
+            "growth": {"status": "ok", "data": {"revenue_yoy": 16.60, "roe": 141.47, "gross_margin": 47.86}},
+            "belong_boards": [
+                {"name": "Technology", "type": "行业"},
+                {"name": "Consumer Electronics", "type": "概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("财务摘要", out)
+        self.assertIn("亿美元", out)
+        self.assertNotIn("12360.00 亿元", out)
+        # Sample expected formatted values
+        self.assertIn("1110.00 亿美元", out)
+        self.assertIn("141.47%", out)
+        # Dividend per share also picks up currency suffix
+        self.assertIn("1.0500 美元", out)
+        # Sector + industry render as belong_boards
+        self.assertIn("Technology", out)
+        self.assertIn("Consumer Electronics", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_related_boards_drops_signal_columns_when_no_sector_data(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """HK/US lack 板块涨跌榜 — drop status / change_pct columns entirely."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="AAPL",
+            name="Apple Inc.",
+            sentiment_score=64,
+            trend_prediction="震荡",
+            operation_advice="观望",
+            analysis_summary="观望等待 AI 兑现节奏。",
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {
+                "financial_report": {
+                    "report_date": "2026-03-31",
+                    "revenue": 1.11e11,
+                    "currency": "USD",
+                },
+            }},
+            "growth": {"status": "ok", "data": {"revenue_yoy": 16.60}},
+            "belong_boards": [
+                {"name": "Technology", "type": "行业"},
+                {"name": "Consumer Electronics", "type": "概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("关联板块", out)
+        self.assertIn("Technology", out)
+        self.assertIn("Consumer Electronics", out)
+        # When no sector ranking data is available, drop the 4-col layout.
+        self.assertNotIn("板块表现", out)
+        self.assertNotIn("板块涨跌幅", out)
+        # And no leftover "--" cells either.
+        self.assertNotIn("| -- | -- |", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_related_boards_keeps_signal_columns_when_any_board_has_data(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """When at least one belong_board lines up with a sector ranking, keep 4-col layout."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {"status": "ok", "data": {}},
+            "growth": {"status": "ok", "data": {}},
+            "boards": {"status": "ok", "data": {
+                "top": [{"name": "白酒", "change_pct": 3.42}],
+                "bottom": [],
+            }},
+            "belong_boards": [
+                {"name": "白酒", "code": "BK0596", "type": "行业"},
+                {"name": "MSCI中国", "code": "BK0805", "type": "概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        self.assertIn("板块表现", out)
+        self.assertIn("板块涨跌幅", out)
+        self.assertIn("领涨", out)
+        self.assertIn("+3.42%", out)
+        # MSCI中国 falls back to "--" — that's expected for the row without rank data.
+        self.assertIn("MSCI中国", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_single_stock_report_uses_currency_for_hk(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """HK ADRs have financialCurrency=CNY but trade/pay dividends in HKD.
+
+        The financial summary must render in 元 (CNY income statement) while
+        dividends must render in 港元 — they are NOT the same currency on
+        yfinance HK payloads, so the renderer must read each block's own
+        ``currency`` field rather than assuming a single global currency.
+        """
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="HK09988",
+            name="阿里巴巴-W",
+            sentiment_score=68,
+            trend_prediction="看多",
+            operation_advice="逢低买入",
+            analysis_summary="云业务回正，回购持续。",
+        )
+        result.fundamental_context = {
+            "earnings": {
+                "status": "ok",
+                "data": {
+                    "financial_report": {
+                        "report_date": "2026-03-31",
+                        "revenue": 1.02e12,
+                        "net_profit_parent": 1.04e11,
+                        "operating_cash_flow": 3.6e10,
+                        "roe": 9.22,
+                        "currency": "CNY",
+                    },
+                    "dividend": {
+                        "events": [{
+                            "event_date": "2025-06-11",
+                            "ex_dividend_date": "2025-06-11",
+                            "cash_dividend_per_share": 1.95812,
+                            "is_pre_tax": True,
+                        }],
+                        "ttm_event_count": 1,
+                        "ttm_cash_dividend_per_share": 1.95812,
+                        "ttm_dividend_yield_pct": 1.75,
+                        "currency": "HKD",
+                    },
+                },
+            },
+            "growth": {"status": "ok", "data": {"revenue_yoy": 2.9, "roe": 9.22, "gross_margin": 39.81}},
+            "belong_boards": [
+                {"name": "Consumer Cyclical", "type": "行业"},
+                {"name": "Internet Retail", "type": "概念"},
+            ],
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        # Income statement still rendered in CNY (financialCurrency).
+        self.assertIn("10200.00 亿元", out)
+        # Dividend per share follows the dividend currency, NOT the financial currency.
+        self.assertIn("1.9581 港元", out)
+        self.assertNotIn("1.9581 元 ", out)
+        self.assertIn("Consumer Cyclical", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_dividend_currency_falls_back_to_financial_when_missing(
+        self, mock_get_config: mock.MagicMock
+    ):
+        """A-share AkShare payload has no dividend.currency — fall back to financial_report.currency."""
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+        )
+        result.fundamental_context = {
+            "earnings": {
+                "status": "ok",
+                "data": {
+                    "financial_report": {"report_date": "2026-03-31", "revenue": 4.5e10},
+                    "dividend": {
+                        "events": [{"event_date": "2025-06-20", "ex_dividend_date": "2025-06-20"}],
+                        "ttm_event_count": 1,
+                        "ttm_cash_dividend_per_share": 27.6,
+                    },
+                },
+            },
+        }
+
+        out = service.generate_single_stock_report(result)
+
+        # Without explicit dividend currency, default to 元 (matches AkShare A-share semantics).
+        self.assertIn("27.6000 元", out)
+
+    @mock.patch("src.notification.get_config")
+    def test_generate_dashboard_report_appends_fundamental_blocks(
+        self, mock_get_config: mock.MagicMock
+    ):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=72,
+            trend_prediction="看多",
+            operation_advice="持有",
+            analysis_summary="稳健",
+            dashboard={
+                "core_conclusion": {"one_sentence": "稳健持有"},
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "1600",
+                        "stop_loss": "1500",
+                        "take_profit": "1800",
+                    }
+                },
+            },
+        )
+        result.fundamental_context = self._make_fundamental_context()
+
+        out = service.generate_dashboard_report([result], report_date="2026-05-20")
+
+        self.assertIn("财务摘要", out)
+        self.assertIn("股东回报", out)
+        self.assertIn("关联板块", out)
+        self.assertIn("白酒", out)
+        self.assertIn("领涨", out)
 
     @mock.patch("src.notification.get_config")
     def test_history_compare_context_uses_cache(self, mock_get_config: mock.MagicMock):

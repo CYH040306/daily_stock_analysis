@@ -279,6 +279,89 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.market_review_report, "市场复盘报告示例文本")
         self.assertIsNone(status.result)
 
+    def test_get_analysis_status_normalizes_completed_queue_result_contract(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {"query_id": "task-queue-1", "stock_code": "600519"},
+                    "summary": {"analysis_summary": "summary"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            status = get_analysis_status("task-queue-1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.query_id, "task-queue-1")
+        self.assertEqual(status.result.stock_code, "600519")
+        self.assertEqual(status.result.stock_name, "贵州茅台")
+        self.assertEqual(status.result.created_at, created_at.isoformat())
+        self.assertEqual(
+            status.result.report["summary"]["analysis_summary"],
+            "summary",
+        )
+
+    def test_get_analysis_status_preserves_queue_report_created_at_when_enriching(self) -> None:
+        if get_analysis_status is None or analysis_endpoint_module is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        created_at = datetime(2026, 5, 21, 17, 40, 0)
+        queue = MagicMock()
+        queue.get_task.return_value = SimpleNamespace(
+            task_id="task-queue-2",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=analysis_endpoint_module.TaskStatusEnum.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {"query_id": "task-queue-2", "stock_code": "600519"},
+                    "summary": {"analysis_summary": "summary"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            created_at=created_at,
+            completed_at=datetime(2026, 5, 21, 17, 45, 0),
+        )
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue), \
+             patch(
+                 "api.v1.endpoints.analysis._load_sync_fundamental_sources",
+                 return_value=({}, None),
+             ):
+            status = get_analysis_status("task-queue-2")
+
+        self.assertEqual(status.status, "completed")
+        self.assertIsNotNone(status.result)
+        self.assertEqual(status.result.created_at, created_at.isoformat())
+        self.assertEqual(
+            status.result.report["meta"]["created_at"],
+            created_at.isoformat(),
+        )
+
     def test_run_market_review_background_raises_when_report_is_empty(self) -> None:
         if analysis_endpoint_module is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -653,6 +736,32 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(result["stock_name"], "Unnamed Stock")
         self.assertEqual(result["report"]["meta"]["stock_name"], "Unnamed Stock")
 
+    def test_build_analysis_response_does_not_use_model_news_summary_as_retrieval_evidence(self) -> None:
+        service = AnalysisService()
+        result = service._build_analysis_response(
+            SimpleNamespace(
+                code="600519",
+                name="贵州茅台",
+                current_price=1234.56,
+                change_pct=1.23,
+                model_used="test-model",
+                analysis_summary="summary",
+                operation_advice="hold",
+                trend_prediction="up",
+                sentiment_score=80,
+                news_summary="model generated news summary",
+                technical_analysis="tech",
+                fundamental_analysis="fundamental",
+                risk_warning="risk",
+                get_sniper_points=lambda: {},
+            ),
+            "q1",
+            report_type="full",
+        )
+
+        news_component = result["diagnostic_summary"]["components"]["news"]
+        self.assertEqual(news_component["status"], "unknown")
+
     def test_build_analysis_report_extracts_fundamental_fields_from_snapshot(self) -> None:
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
@@ -746,6 +855,94 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
         self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
         self.assertEqual(report.details.sector_rankings["top"][0]["change_pct"], 2.5)
+
+    def test_build_analysis_report_merges_partial_top_level_context_with_fallback(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {},
+                "summary": {},
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot={
+                "fundamental_context": {
+                    "belong_boards": [{"name": "白酒", "type": "行业"}],
+                    "boards": {
+                        "data": {
+                            "top": [{"name": "白酒", "change_pct": 2.5}],
+                            "bottom": [],
+                        }
+                    },
+                }
+            },
+            fallback_fundamental_payload={
+                "earnings": {
+                    "data": {
+                        "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
+                        "dividend": {"ttm_dividend_yield_pct": 2.6},
+                    }
+                }
+            },
+        )
+
+        self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
+        self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
+
+    def test_build_analysis_report_keeps_fallback_when_snapshot_has_empty_placeholders(self) -> None:
+        if _build_analysis_report is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        report = _build_analysis_report(
+            report_data={
+                "meta": {},
+                "summary": {},
+                "strategy": {},
+                "details": {},
+            },
+            query_id="q1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            context_snapshot={
+                "fundamental_context": {
+                    "belong_boards": [],
+                    "boards": {},
+                    "earnings": {},
+                },
+                "enhanced_context": {
+                    "fundamental_context": {
+                        "earnings": {"data": {}},
+                    }
+                },
+            },
+            fallback_fundamental_payload={
+                "belong_boards": [{"name": "白酒", "type": "行业"}],
+                "boards": {
+                    "data": {
+                        "top": [{"name": "白酒", "change_pct": 2.5}],
+                        "bottom": [],
+                    }
+                },
+                "earnings": {
+                    "data": {
+                        "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
+                        "dividend": {"ttm_dividend_yield_pct": 2.6},
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(report.details.belong_boards, [{"name": "白酒", "type": "行业"}])
+        self.assertEqual(report.details.sector_rankings["top"][0]["name"], "白酒")
+        self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
+        self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
 
     def test_build_analysis_report_normalizes_related_board_payloads(self) -> None:
         if _build_analysis_report is None:
@@ -930,6 +1127,141 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         self.assertEqual(status.result.report["meta"]["current_price"], 1234.5)
         self.assertEqual(status.result.report["meta"]["change_pct"], 0.0)
         self.assertEqual(status.result.report["meta"]["model_used"], "test-model")
+
+    def test_get_analysis_status_completed_db_snapshot_includes_agent_snapshot_board_details(self) -> None:
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        record = SimpleNamespace(
+            id=1,
+            code="600519",
+            name="贵州茅台",
+            report_type="detailed",
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            raw_result=json.dumps({"model_used": "test-model", "report_language": "zh"}),
+            context_snapshot=json.dumps(
+                {
+                    "fundamental_context": {
+                        "belong_boards": [{"name": "白酒", "type": "行业"}],
+                        "boards": {
+                            "data": {
+                                "top": [{"name": "白酒", "change_pct": 2.8}],
+                                "bottom": [],
+                            }
+                        },
+                    },
+                    "realtime_quote": {
+                        "price": 1888.0,
+                        "change_pct": 1.56,
+                    },
+                }
+            ),
+            news_content="news",
+            sentiment_score=80,
+            operation_advice="持有",
+            trend_prediction="震荡上行",
+            analysis_summary="summary",
+            ideal_buy=None,
+            secondary_buy=None,
+            stop_loss=None,
+            take_profit=None,
+        )
+        mock_db = MagicMock()
+        mock_db.get_analysis_history.return_value = [record]
+        mock_db.get_latest_fundamental_snapshot.return_value = None
+
+        with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
+             patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
+            queue_mock.return_value.get_task.return_value = None
+            status = get_analysis_status("task_agent_snapshot_1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertEqual(status.result.report["meta"]["current_price"], 1888.0)
+        self.assertEqual(status.result.report["meta"]["change_pct"], 1.56)
+        self.assertEqual(
+            status.result.report["details"]["belong_boards"],
+            [{"name": "白酒", "type": "行业"}],
+        )
+        self.assertEqual(
+            status.result.report["details"]["sector_rankings"]["top"][0]["name"],
+            "白酒",
+        )
+
+    def test_get_analysis_status_in_memory_task_enriches_agent_snapshot_board_details(self) -> None:
+        if get_analysis_status is None:
+            self.skipTest("analysis endpoint helpers unavailable in this environment")
+
+        context_snapshot = {
+            "fundamental_context": {
+                "belong_boards": [{"name": "白酒", "type": "行业"}],
+                "boards": {
+                    "data": {
+                        "top": [{"name": "白酒", "change_pct": 2.8}],
+                        "bottom": [],
+                    }
+                },
+            },
+            "realtime_quote": {
+                "price": 1888.0,
+                "change_pct": 1.56,
+            },
+        }
+        task = SimpleNamespace(
+            task_id="task_agent_snapshot_in_memory_1",
+            stock_code="600519",
+            stock_name="贵州茅台",
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            result={
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "report": {
+                    "meta": {
+                        "query_id": "task_agent_snapshot_in_memory_1",
+                        "stock_code": "600519",
+                        "stock_name": "贵州茅台",
+                        "report_type": "detailed",
+                        "report_language": "zh",
+                        "created_at": "2026-04-10T12:00:00",
+                        "model_used": "test-model",
+                    },
+                    "summary": {"analysis_summary": "summary"},
+                    "details": {"news_summary": "news"},
+                },
+            },
+            error=None,
+            original_query=None,
+            selection_source=None,
+            skills=None,
+            created_at=datetime(2026, 4, 10, 12, 0, 0),
+            completed_at=datetime(2026, 4, 10, 12, 1, 0),
+        )
+        record = SimpleNamespace(context_snapshot=json.dumps(context_snapshot))
+        mock_db = MagicMock()
+        mock_db.get_analysis_history.return_value = [record]
+        mock_db.get_latest_fundamental_snapshot.return_value = None
+
+        with patch("api.v1.endpoints.analysis.get_task_queue") as queue_mock, \
+             patch("src.storage.DatabaseManager.get_instance", return_value=mock_db):
+            queue_mock.return_value.get_task.return_value = task
+            status = get_analysis_status("task_agent_snapshot_in_memory_1")
+
+        self.assertEqual(status.status, "completed")
+        self.assertEqual(status.result.report["meta"]["current_price"], 1888.0)
+        self.assertEqual(status.result.report["meta"]["change_pct"], 1.56)
+        self.assertEqual(
+            status.result.report["details"]["belong_boards"],
+            [{"name": "白酒", "type": "行业"}],
+        )
+        self.assertEqual(
+            status.result.report["details"]["sector_rankings"]["top"][0]["name"],
+            "白酒",
+        )
+        mock_db.get_analysis_history.assert_called_once_with(
+            query_id="task_agent_snapshot_in_memory_1",
+            code="600519",
+            limit=1,
+        )
 
     def test_openapi_declares_single_and_batch_async_202_payloads(self) -> None:
         if create_app is None:

@@ -650,7 +650,7 @@ const SettingsPage: React.FC = () => {
                       <div>
                         <p className="text-sm font-medium text-foreground">桌面端更新</p>
                         <p className="text-xs leading-6 text-muted-text">
-                          启动后会自动检查 GitHub Releases 最新正式版；Windows 安装版会后台下载更新并提示重启安装。
+                          启动后会自动检查 GitHub Releases 最新正式版；Windows 安装版会后台下载更新，确认后静默重启安装。
                         </p>
                       </div>
                       <Button

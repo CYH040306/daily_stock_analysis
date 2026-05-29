@@ -39,6 +39,8 @@ from src.report_language import (
     get_localized_stock_name,
     get_report_labels,
     get_signal_level,
+    get_chip_unavailable_reason,
+    is_chip_structure_unavailable,
     localize_chip_health,
     localize_operation_advice,
     localize_trend_prediction,
@@ -67,6 +69,26 @@ from src.notification_sender import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Best-effort float conversion; handles `"3.2%"` and `"1,234"` shapes."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    text = str(value).strip().replace(",", "")
+    if text.endswith("%"):
+        text = text[:-1].strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 if TYPE_CHECKING:
     from src.analyzer import AnalysisResult
@@ -1125,12 +1147,25 @@ class NotificationService(
                         ])
                     # 筹码结构
                     if chip_data:
-                        chip_health = localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language)
-                        report_lines.extend([
-                            f"**{labels['chip_label']}**: {chip_data.get('profit_ratio', 'N/A')} | {chip_data.get('avg_cost', 'N/A')} | "
-                            f"{chip_data.get('concentration', 'N/A')} {chip_health}",
-                            "",
-                        ])
+                        if is_chip_structure_unavailable(chip_data):
+                            report_lines.extend([
+                                f"**{labels['chip_label']}**: {get_chip_unavailable_reason(chip_data, report_language)}",
+                                "",
+                            ])
+                        else:
+                            chip_health = localize_chip_health(chip_data.get('chip_health', 'N/A'), report_language)
+                            report_lines.extend([
+                                f"**{labels['chip_label']}**: {chip_data.get('profit_ratio', 'N/A')} | {chip_data.get('avg_cost', 'N/A')} | "
+                                f"{chip_data.get('concentration', 'N/A')} {chip_health}",
+                                "",
+                            ])
+                    else:
+                        chip_unavailable_reason = get_chip_unavailable_reason(data_persp, report_language)
+                        if chip_unavailable_reason:
+                            report_lines.extend([
+                                f"**{labels['chip_label']}**: {chip_unavailable_reason}",
+                                "",
+                            ])
                 
                 # ========== 作战计划 ==========
                 battle = dashboard.get('battle_plan', {}) if dashboard else {}
@@ -1172,7 +1207,10 @@ class NotificationService(
                         for item in checklist:
                             report_lines.append(f"- {item}")
                         report_lines.append("")
-                
+
+                # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
+                self._append_fundamental_blocks(report_lines, result)
+
                 # 如果没有 dashboard，显示传统格式
                 if not dashboard:
                     # 操作理由
@@ -1632,7 +1670,10 @@ class NotificationService(
                 f"- 💼 **{labels['has_position_label']}**: {pos_advice.get('has_position', labels['continue_holding'])}",
                 "",
             ])
-        
+
+        # 财务摘要 / 股东回报 / 关联板块（数据缺失时自动隐藏对应小节）
+        self._append_fundamental_blocks(lines, result)
+
         lines.append("---")
         if self._should_show_llm_model():
             model_used = normalize_model_used(getattr(result, "model_used", None))
@@ -1693,6 +1734,265 @@ class NotificationService(
                 f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
             ])
 
+        lines.append("")
+
+    _CURRENCY_SUFFIX = {
+        "USD": "美元",
+        "HKD": "港元",
+        "CNY": "元",
+        "RMB": "元",
+        "CNH": "元",
+    }
+
+    @classmethod
+    def _format_amount_cn(cls, value: Any, currency: Optional[str] = None) -> str:
+        """Format absolute amounts in 亿/万 + currency suffix; returns N/A on non-numeric.
+
+        ``currency`` accepts ``USD``/``HKD``/``CNY``; unknown values fall back to 元.
+        """
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if amount != amount:  # NaN
+            return "N/A"
+        sign = "-" if amount < 0 else ""
+        abs_amount = abs(amount)
+        suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        if abs_amount >= 1e8:
+            return f"{sign}{abs_amount / 1e8:.2f} 亿{suffix}"
+        if abs_amount >= 1e4:
+            return f"{sign}{abs_amount / 1e4:.2f} 万{suffix}"
+        return f"{sign}{abs_amount:.0f} {suffix}"
+
+    @staticmethod
+    def _format_percent(value: Any) -> str:
+        try:
+            return f"{float(value):.2f}%"
+        except (TypeError, ValueError):
+            return "N/A"
+
+    @classmethod
+    def _format_per_share(cls, value: Any, currency: Optional[str] = None) -> str:
+        try:
+            amount = float(value)
+        except (TypeError, ValueError):
+            return "N/A"
+        if amount != amount:  # NaN
+            return "N/A"
+        suffix = cls._CURRENCY_SUFFIX.get((currency or "").upper(), "元")
+        return f"{amount:.4f} {suffix}"
+
+    @staticmethod
+    def _format_text(value: Any) -> str:
+        if value is None:
+            return "N/A"
+        text = str(value).strip()
+        return text if text else "N/A"
+
+    def _get_fundamental_blocks(self, result: AnalysisResult) -> Dict[str, Any]:
+        """Extract financial_report / dividend / belong_boards / sector_rankings.
+
+        Falls back to empty containers when fundamental_context is missing or partial,
+        so callers can rely on dict shape without re-checking types.
+        """
+        ctx = getattr(result, "fundamental_context", None)
+        if not isinstance(ctx, dict):
+            return {
+                "financial_report": {},
+                "growth": {},
+                "dividend": {},
+                "belong_boards": [],
+                "sector_top": [],
+                "sector_bottom": [],
+            }
+
+        earnings_block = ctx.get("earnings") if isinstance(ctx.get("earnings"), dict) else {}
+        earnings_data = earnings_block.get("data") if isinstance(earnings_block.get("data"), dict) else {}
+        financial_report = earnings_data.get("financial_report") if isinstance(earnings_data.get("financial_report"), dict) else {}
+        dividend = earnings_data.get("dividend") if isinstance(earnings_data.get("dividend"), dict) else {}
+
+        growth_block = ctx.get("growth") if isinstance(ctx.get("growth"), dict) else {}
+        growth_data = growth_block.get("data") if isinstance(growth_block.get("data"), dict) else {}
+
+        boards_block = ctx.get("boards") if isinstance(ctx.get("boards"), dict) else {}
+        boards_data = boards_block.get("data") if isinstance(boards_block.get("data"), dict) else {}
+        sector_top = boards_data.get("top") if isinstance(boards_data.get("top"), list) else []
+        sector_bottom = boards_data.get("bottom") if isinstance(boards_data.get("bottom"), list) else []
+
+        belong_boards = ctx.get("belong_boards") if isinstance(ctx.get("belong_boards"), list) else []
+
+        return {
+            "financial_report": financial_report,
+            "growth": growth_data,
+            "dividend": dividend,
+            "belong_boards": belong_boards,
+            "sector_top": sector_top,
+            "sector_bottom": sector_bottom,
+        }
+
+    def _append_fundamental_blocks(self, lines: List[str], result: AnalysisResult) -> None:
+        """Append 财务摘要 / 股东回报 / 关联板块 markdown blocks.
+
+        Each block is only rendered when at least one cell has data; this keeps
+        the email compact when the fundamental pipeline returned partial/failed
+        results (e.g. HK/US markets, ETF, or AkShare outages).
+        """
+        blocks = self._get_fundamental_blocks(result)
+        report_language = self._get_report_language(result)
+        labels = get_report_labels(report_language)
+
+        self._append_financial_summary(lines, blocks, labels)
+        self._append_shareholder_return(lines, blocks, labels)
+        self._append_related_boards(lines, blocks, labels)
+
+    def _append_financial_summary(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        report = blocks.get("financial_report") or {}
+        growth = blocks.get("growth") or {}
+        currency = report.get("currency") if isinstance(report.get("currency"), str) else None
+        cells = {
+            "report_date": self._format_text(report.get("report_date")),
+            "revenue": self._format_amount_cn(report.get("revenue"), currency),
+            "net_profit": self._format_amount_cn(report.get("net_profit_parent"), currency),
+            "operating_cash_flow": self._format_amount_cn(report.get("operating_cash_flow"), currency),
+            "roe": self._format_percent(report.get("roe") if report.get("roe") is not None else growth.get("roe")),
+            "revenue_yoy": self._format_percent(growth.get("revenue_yoy")),
+            "net_profit_yoy": self._format_percent(growth.get("net_profit_yoy")),
+            "gross_margin": self._format_percent(growth.get("gross_margin")),
+        }
+        if all(v == "N/A" for v in cells.values()):
+            return
+
+        lines.extend([
+            f"### 💼 {labels['financial_summary_heading']}",
+            "",
+            (
+                f"| {labels['report_date_label']} | {labels['revenue_label']} | "
+                f"{labels['net_profit_label']} | {labels['operating_cash_flow_label']} | "
+                f"{labels['roe_label']} | {labels['revenue_yoy_label']} | "
+                f"{labels['net_profit_yoy_label']} | {labels['gross_margin_label']} |"
+            ),
+            # 报告期居中，金额/比例右对齐 — 与现有市场快照风格保持一致
+            "|:------:|-------:|-------:|-------:|------:|------:|------:|------:|",
+            (
+                f"| {cells['report_date']} | {cells['revenue']} | {cells['net_profit']} | "
+                f"{cells['operating_cash_flow']} | {cells['roe']} | {cells['revenue_yoy']} | "
+                f"{cells['net_profit_yoy']} | {cells['gross_margin']} |"
+            ),
+            "",
+        ])
+
+    def _append_shareholder_return(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        dividend = blocks.get("dividend") or {}
+        report = blocks.get("financial_report") or {}
+        # Dividends are paid in the trading currency (yfinance `info.currency`)
+        # which can differ from the financial-statement currency (e.g. HK ADRs
+        # often report `financialCurrency=CNY` but pay dividends in HKD).
+        dividend_currency = dividend.get("currency") if isinstance(dividend.get("currency"), str) else None
+        if not dividend_currency:
+            dividend_currency = report.get("currency") if isinstance(report.get("currency"), str) else None
+        events = dividend.get("events") if isinstance(dividend.get("events"), list) else []
+        latest_event = events[0] if events else {}
+        if not isinstance(latest_event, dict):
+            latest_event = {}
+
+        ttm_event_count = dividend.get("ttm_event_count")
+        cells = {
+            "ttm_cash": self._format_per_share(dividend.get("ttm_cash_dividend_per_share"), dividend_currency),
+            "ttm_count": str(ttm_event_count) if isinstance(ttm_event_count, int) else "N/A",
+            "ttm_yield": self._format_percent(dividend.get("ttm_dividend_yield_pct")),
+            "latest_ex": self._format_text(latest_event.get("ex_dividend_date") or latest_event.get("event_date")),
+        }
+        if all(v == "N/A" for v in cells.values()):
+            return
+
+        lines.extend([
+            f"### 💵 {labels['shareholder_return_heading']}",
+            "",
+            (
+                f"| {labels['ttm_cash_dividend_label']} | {labels['ttm_event_count_label']} | "
+                f"{labels['ttm_dividend_yield_label']} | {labels['latest_ex_dividend_label']} |"
+            ),
+            "|---------------------:|----------:|--------:|:--------:|",
+            (
+                f"| {cells['ttm_cash']} | {cells['ttm_count']} | "
+                f"{cells['ttm_yield']} | {cells['latest_ex']} |"
+            ),
+            "",
+        ])
+
+    def _append_related_boards(
+        self,
+        lines: List[str],
+        blocks: Dict[str, Any],
+        labels: Dict[str, str],
+    ) -> None:
+        belong_boards = blocks.get("belong_boards") or []
+        if not belong_boards:
+            return
+
+        sector_signals: Dict[str, Tuple[str, Optional[float]]] = {}
+        for item in blocks.get("sector_top") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            sector_signals[name] = (labels["leading_board_label"], _safe_float(item.get("change_pct")))
+        for item in blocks.get("sector_bottom") or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name or name in sector_signals:
+                continue
+            sector_signals[name] = (labels["lagging_board_label"], _safe_float(item.get("change_pct")))
+
+        # Pre-resolve rows so we know whether sector-signal columns carry any
+        # data — drop them entirely when every cell would be "--" (typical for
+        # HK/US where there's no 板块涨跌榜 feed) so the table stays compact.
+        prepared: List[Tuple[str, str, Optional[str], Optional[float]]] = []
+        for raw in belong_boards[:5]:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                continue
+            board_type = self._format_text(raw.get("type"))
+            status_text, change_pct = sector_signals.get(name, (None, None))
+            prepared.append((name, board_type, status_text, change_pct))
+
+        if not prepared:
+            return
+
+        has_sector_signal = any(status is not None for _, _, status, _ in prepared)
+
+        lines.append(f"### 🧩 {labels['related_boards_heading']}")
+        lines.append("")
+        if has_sector_signal:
+            lines.append(
+                f"| {labels['board_name_label']} | {labels['board_type_label']} | "
+                f"{labels['board_status_label']} | {labels['board_change_pct_label']} |"
+            )
+            lines.append("|:-----|:----:|:------:|------:|")
+            for name, board_type, status_text, change_pct in prepared:
+                status = status_text if status_text is not None else "--"
+                change = "--" if change_pct is None else f"{change_pct:+.2f}%"
+                lines.append(f"| {name} | {board_type} | {status} | {change} |")
+        else:
+            lines.append(f"| {labels['board_name_label']} | {labels['board_type_label']} |")
+            lines.append("|:-----|:----:|")
+            for name, board_type, _, _ in prepared:
+                lines.append(f"| {name} | {board_type} |")
         lines.append("")
 
     def _should_use_image_for_channel(

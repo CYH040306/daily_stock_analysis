@@ -23,6 +23,7 @@ from src.report_language import normalize_report_language
 from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
+from src.schemas.market_light import MarketLightSnapshot
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,15 @@ class MarketOverview:
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
+
+
+@dataclass
+class MarketLightReviewResult:
+    """Internal market-review parts built from one overview fetch."""
+
+    overview: MarketOverview
+    report: str
+    market_light_snapshot: Dict[str, Any]
 
 
 class MarketAnalyzer:
@@ -587,7 +597,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
     def build_market_light_snapshot(self, overview: MarketOverview) -> Dict[str, Any]:
         """Build a deterministic market-light snapshot from structured breadth data."""
-        score, temperature_label = self._build_market_temperature(overview)
+        scores = self._build_market_light_scores(overview)
+        score = int(scores["score"])
+        temperature_label = str(scores["temperature_label"])
         if score >= 60:
             status = "green"
         elif score >= 40:
@@ -620,14 +632,19 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             }
             reasons = self._build_market_light_reasons_zh(overview, score)
 
-        return {
-            "status": status,
-            "label": label_map[status],
-            "score": score,
-            "temperature_label": temperature_label,
-            "reasons": reasons,
-            "guidance": guidance_map[status],
-        }
+        snapshot = MarketLightSnapshot(
+            region=self.region,
+            trade_date=overview.date,
+            status=status,
+            label=label_map[status],
+            score=score,
+            temperature_label=temperature_label,
+            reasons=reasons,
+            guidance=guidance_map[status],
+            dimensions=scores["dimensions"],
+            data_quality=str(scores["data_quality"]),
+        )
+        return snapshot.model_dump()
 
     def _build_market_light_reasons_zh(self, overview: MarketOverview, score: int) -> List[str]:
         participation = overview.up_count + overview.down_count
@@ -640,8 +657,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，亏钱效应较强")
             else:
                 reasons.append(f"上涨家数占比 {up_ratio:.0%}，市场分化")
-        if overview.indices:
-            avg_change = sum(idx.change_pct for idx in overview.indices) / len(overview.indices)
+        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        if index_changes:
+            avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"主要指数平均涨跌幅 {avg_change:+.2f}%")
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"涨跌停差 {overview.limit_up_count - overview.limit_down_count:+d}")
@@ -662,8 +680,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 reasons.append(f"advancers ratio {up_ratio:.0%}, downside pressure dominates")
             else:
                 reasons.append(f"advancers ratio {up_ratio:.0%}, breadth is mixed")
-        if overview.indices:
-            avg_change = sum(idx.change_pct for idx in overview.indices) / len(overview.indices)
+        index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        if index_changes:
+            avg_change = sum(index_changes) / len(index_changes)
             reasons.append(f"average major-index change {avg_change:+.2f}%")
         if overview.limit_up_count or overview.limit_down_count:
             reasons.append(f"limit-up/down spread {overview.limit_up_count - overview.limit_down_count:+d}")
@@ -823,22 +842,40 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "缩量观望"
         return "暂无数据"
 
-    def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
+    def _build_market_light_scores(self, overview: MarketOverview) -> Dict[str, Any]:
+        """Build the canonical Market Light scores used by reports and alerts."""
+
         participants = overview.up_count + overview.down_count
+        breadth_available = bool(self.profile.has_market_stats and participants > 0)
         breadth_score = 50
-        if participants:
+        if breadth_available:
             breadth_score = int(overview.up_count / participants * 100)
 
         index_changes = [idx.change_pct for idx in overview.indices if idx.change_pct is not None]
+        index_available = bool(overview.indices and index_changes)
         index_score = 50
-        if index_changes:
+        if index_available:
             avg_change = sum(index_changes) / len(index_changes)
             index_score = int(max(0, min(100, 50 + avg_change * 12)))
 
         limit_total = overview.limit_up_count + overview.limit_down_count
+        limit_available = bool(self.profile.has_market_stats and limit_total > 0)
         limit_score = 50
-        if limit_total:
+        if limit_available:
             limit_score = int(overview.limit_up_count / limit_total * 100)
+
+        dimensions = {
+            "breadth": {"score": breadth_score, "available": breadth_available},
+            "index": {"score": index_score, "available": index_available},
+            "limit": {"score": limit_score, "available": limit_available},
+        }
+
+        if not index_available:
+            data_quality = "unavailable"
+        elif all(dimension["available"] for dimension in dimensions.values()):
+            data_quality = "ok"
+        else:
+            data_quality = "partial"
 
         score = int(round(breadth_score * 0.45 + index_score * 0.35 + limit_score * 0.20))
         if self._get_review_language() == "en":
@@ -859,6 +896,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 label = "震荡"
             else:
                 label = "偏弱"
+        return {
+            "score": score,
+            "temperature_label": label,
+            "dimensions": dimensions,
+            "data_quality": data_quality,
+        }
+
+    def _build_market_temperature(self, overview: MarketOverview) -> tuple[int, str]:
+        scores = self._build_market_light_scores(overview)
+        score = int(scores["score"])
+        label = str(scores["temperature_label"])
         return score, label
 
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
@@ -1186,27 +1234,40 @@ Market conditions can change quickly. The data above is for reference only and d
 *复盘时间: {datetime.now().strftime('%H:%M')}*
 """
     
+    def _run_daily_review_parts(self) -> MarketLightReviewResult:
+        """Run market review once and keep report/snapshot on the same overview."""
+        logger.info("========== 开始大盘复盘分析 ==========")
+
+        # 1. 获取市场概览
+        overview = self.get_market_overview()
+
+        # 2. 搜索市场新闻
+        news = self.search_market_news()
+
+        # 3. 生成复盘报告
+        report = self.generate_market_review(overview, news)
+        snapshot = self.build_market_light_snapshot(overview)
+
+        logger.info("========== 大盘复盘分析完成 ==========")
+
+        return MarketLightReviewResult(
+            overview=overview,
+            report=report,
+            market_light_snapshot=snapshot,
+        )
+
     def run_daily_review(self) -> str:
         """
         执行每日大盘复盘流程
-        
+
         Returns:
             复盘报告文本
         """
-        logger.info("========== 开始大盘复盘分析 ==========")
-        
-        # 1. 获取市场概览
-        overview = self.get_market_overview()
-        
-        # 2. 搜索市场新闻
-        news = self.search_market_news()
-        
-        # 3. 生成复盘报告
-        report = self.generate_market_review(overview, news)
-        
-        logger.info("========== 大盘复盘分析完成 ==========")
-        
-        return report
+        return self.run_daily_review_with_snapshot().report
+
+    def run_daily_review_with_snapshot(self) -> MarketLightReviewResult:
+        """Run daily review and return the report plus its structured Market Light snapshot."""
+        return self._run_daily_review_parts()
 
 
 # 测试入口

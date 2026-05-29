@@ -36,7 +36,7 @@
 
 ## GitHub Actions 映射
 
-仓库自带 `.github/workflows/daily_analysis.yml` 只显式导入固定变量名。P0/P3/P4/P6 已把 Body 模板、安全项、PushPlus topic、路由、降噪、ntfy 和 Gotify 等通知 key 纳入默认 workflow。下面的表格由 `scripts/generate_notification_actions_env_table.py` 从 workflow `env:` 和通知诊断元数据生成，避免手写对照表和真实 Actions 映射继续漂移。
+仓库自带 `.github/workflows/00-daily-analysis.yml` 只显式导入固定变量名。P0/P3/P4/P6 已把 Body 模板、安全项、PushPlus topic、路由、降噪、ntfy 和 Gotify 等通知 key 纳入默认 workflow。下面的表格由 `scripts/generate_notification_actions_env_table.py` 从 workflow `env:` 和通知诊断元数据生成，避免手写对照表和真实 Actions 映射继续漂移。
 
 <!-- notification-actions-env-table:start -->
 
@@ -270,7 +270,7 @@ Docker 场景可通过 `--env-file .env` / Compose `env_file` 注入运行时环
 
 ## GitHub Actions
 
-默认 `daily_analysis.yml` 只读取表格中显式映射的 Secret / Variable。新增 repository Secret 或 Variable 后，只有变量名已经出现在 workflow `env:` 中才会进入运行进程；`STOCK_GROUP_N` / `EMAIL_GROUP_N` 这类任意编号变量不会自动导入。
+默认 `00-daily-analysis.yml` 只读取表格中显式映射的 Secret / Variable。新增 repository Secret 或 Variable 后，只有变量名已经出现在 workflow `env:` 中才会进入运行进程；`STOCK_GROUP_N` / `EMAIL_GROUP_N` 这类任意编号变量不会自动导入。
 
 Secret 适合 token、password、webhook URL 等敏感项；Variable 适合 `WECHAT_MSG_TYPE`、`EMAIL_SENDER_NAME`、路由、降噪窗口和时区这类非敏感行为配置。`MARKDOWN_TO_IMAGE_CHANNELS` 与 `MERGE_EMAIL_NOTIFICATION` 默认不映射，如需在自己的 fork 中使用，应显式修改 workflow 并补充对应测试。
 

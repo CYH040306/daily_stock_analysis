@@ -8,9 +8,10 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-TargetScopeValue = Literal["single_symbol"]
+TargetScopeValue = Literal["single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"]
 SeverityValue = Literal["info", "warning", "critical"]
 DryRunStatusValue = Literal["triggered", "not_triggered", "evaluation_error"]
+TargetRecordStatusValue = Literal["triggered", "skipped", "degraded", "failed"]
 
 
 class AlertRuleCreateRequest(BaseModel):
@@ -67,12 +68,29 @@ class AlertDeleteResponse(BaseModel):
     deleted: int
 
 
+class AlertRuleTargetResult(BaseModel):
+    target: str
+    display_target: Optional[str] = None
+    status: DryRunStatusValue
+    record_status: Optional[TargetRecordStatusValue] = None
+    triggered: bool
+    observed_value: Optional[Any] = None
+    threshold: Optional[Any] = None
+    message: str
+
+
 class AlertRuleTestResponse(BaseModel):
     rule_id: int
+    target_scope: Optional[str] = None
     status: DryRunStatusValue
     triggered: bool
     observed_value: Optional[Any] = None
     message: str
+    evaluated_count: int = 0
+    triggered_count: int = 0
+    degraded_count: int = 0
+    skipped_count: int = 0
+    target_results: List[AlertRuleTargetResult] = Field(default_factory=list)
 
 
 class AlertTriggerItem(BaseModel):

@@ -99,6 +99,41 @@ NEWS_STRATEGY_WINDOWS: Dict[str, int] = {
 }
 
 
+@dataclass(frozen=True)
+class AgentContextCompressionPreset:
+    """Preset values for visible chat history compression."""
+
+    trigger_tokens: int
+    protected_turns: int
+    summary_target_tokens: int
+    # P1 reserves this budget for future prompt-size controls; it is not
+    # enforced by the current rolling-summary state table.
+    history_budget_tokens: int
+
+
+AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE = "balanced"
+AGENT_CONTEXT_COMPRESSION_PROFILES: Dict[str, AgentContextCompressionPreset] = {
+    "cost": AgentContextCompressionPreset(
+        trigger_tokens=6000,
+        protected_turns=2,
+        summary_target_tokens=900,
+        history_budget_tokens=4000,
+    ),
+    "balanced": AgentContextCompressionPreset(
+        trigger_tokens=12000,
+        protected_turns=4,
+        summary_target_tokens=1500,
+        history_budget_tokens=8000,
+    ),
+    "long_context_raw_first": AgentContextCompressionPreset(
+        trigger_tokens=24000,
+        protected_turns=6,
+        summary_target_tokens=2600,
+        history_budget_tokens=14000,
+    ),
+}
+
+
 def parse_env_bool(value: Optional[str], default: bool = False) -> bool:
     """Parse common truthy/falsey environment-style values."""
     if value is None:
@@ -210,6 +245,60 @@ def resolve_news_window_days(news_max_age_days: int, news_strategy_profile: Opti
     profile = normalize_news_strategy_profile(news_strategy_profile)
     profile_days = NEWS_STRATEGY_WINDOWS.get(profile, NEWS_STRATEGY_WINDOWS["short"])
     return max(1, min(max(1, int(news_max_age_days)), profile_days))
+
+
+def normalize_agent_context_compression_profile(value: Optional[str]) -> str:
+    """Normalize visible-chat context compression profile values."""
+    candidate = (value or AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE).strip().lower()
+    if candidate in AGENT_CONTEXT_COMPRESSION_PROFILES:
+        return candidate
+    logger.warning(
+        "Invalid AGENT_CONTEXT_COMPRESSION_PROFILE=%r; falling back to %s",
+        value,
+        AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE,
+    )
+    return AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE
+
+
+def get_agent_context_compression_preset(profile: Optional[str]) -> AgentContextCompressionPreset:
+    """Return the preset for a normalized profile, falling back to balanced."""
+    normalized = normalize_agent_context_compression_profile(profile)
+    return AGENT_CONTEXT_COMPRESSION_PROFILES[normalized]
+
+
+def parse_agent_context_compression_int(
+    value: Optional[str],
+    default: int,
+    *,
+    field_name: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Parse compression integers; empty/invalid/out-of-range values follow preset defaults."""
+    raw_value = value
+    if raw_value is None or not str(raw_value).strip():
+        return int(default)
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "%s=%r is not a valid integer; falling back to preset default %s",
+            field_name,
+            raw_value,
+            default,
+        )
+        return int(default)
+    if parsed < minimum or parsed > maximum:
+        logger.warning(
+            "%s=%r is outside supported range [%s, %s]; falling back to preset default %s",
+            field_name,
+            parsed,
+            minimum,
+            maximum,
+            default,
+        )
+        return int(default)
+    return parsed
 
 
 def canonicalize_llm_channel_protocol(value: Optional[str]) -> str:
@@ -536,6 +625,7 @@ class Config:
     longbridge_app_key: Optional[str] = None
     longbridge_app_secret: Optional[str] = None
     longbridge_access_token: Optional[str] = None
+    stock_index_remote_update_enabled: bool = True
 
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-3.1-pro-preview)
@@ -628,6 +718,10 @@ class Config:
     agent_memory_enabled: bool = False  # Enable memory & calibration system
     agent_skill_autoweight: bool = True  # Auto-weight skills by backtest performance
     agent_skill_routing: str = "auto"  # Skill routing: 'auto' (regime-based) or 'manual'
+    agent_context_compression_enabled: bool = False  # Compress visible chat history before Agent calls
+    agent_context_compression_profile: str = AGENT_CONTEXT_COMPRESSION_DEFAULT_PROFILE
+    agent_context_compression_trigger_tokens: int = 12000
+    agent_context_protected_turns: int = 4
     agent_event_monitor_enabled: bool = False  # Enable periodic event-driven alert checks in schedule mode
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
@@ -926,6 +1020,11 @@ class Config:
                 self.agent_skill_routing, self._VALID_SKILL_ROUTING,
             )
             object.__setattr__(self, "agent_skill_routing", "auto")
+        normalized_profile = normalize_agent_context_compression_profile(
+            self.agent_context_compression_profile
+        )
+        if normalized_profile != self.agent_context_compression_profile:
+            object.__setattr__(self, "agent_context_compression_profile", normalized_profile)
 
     # 单例实例存储
     _instance: Optional['Config'] = None
@@ -1187,6 +1286,26 @@ class Config:
             os.getenv('AGENT_LITELLM_MODEL', ''),
             configured_models=set(get_configured_llm_models(llm_model_list)),
         )
+        agent_context_compression_profile = normalize_agent_context_compression_profile(
+            os.getenv('AGENT_CONTEXT_COMPRESSION_PROFILE')
+        )
+        agent_context_compression_preset = get_agent_context_compression_preset(
+            agent_context_compression_profile
+        )
+        agent_context_compression_trigger_tokens = parse_agent_context_compression_int(
+            os.getenv('AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS'),
+            agent_context_compression_preset.trigger_tokens,
+            field_name='AGENT_CONTEXT_COMPRESSION_TRIGGER_TOKENS',
+            minimum=1000,
+            maximum=200000,
+        )
+        agent_context_protected_turns = parse_agent_context_compression_int(
+            os.getenv('AGENT_CONTEXT_PROTECTED_TURNS'),
+            agent_context_compression_preset.protected_turns,
+            field_name='AGENT_CONTEXT_PROTECTED_TURNS',
+            minimum=1,
+            maximum=20,
+        )
 
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
@@ -1296,6 +1415,10 @@ class Config:
             longbridge_app_key=os.getenv('LONGBRIDGE_APP_KEY') or None,
             longbridge_app_secret=os.getenv('LONGBRIDGE_APP_SECRET') or None,
             longbridge_access_token=os.getenv('LONGBRIDGE_ACCESS_TOKEN') or None,
+            stock_index_remote_update_enabled=parse_env_bool(
+                os.getenv('STOCK_INDEX_REMOTE_UPDATE_ENABLED'),
+                default=True,
+            ),
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
@@ -1393,6 +1516,13 @@ class Config:
                 os.getenv('AGENT_SKILL_ROUTING')
                 or os.getenv('AGENT_STRATEGY_ROUTING', 'auto')
             ).lower(),
+            agent_context_compression_enabled=parse_env_bool(
+                os.getenv('AGENT_CONTEXT_COMPRESSION_ENABLED'),
+                default=False,
+            ),
+            agent_context_compression_profile=agent_context_compression_profile,
+            agent_context_compression_trigger_tokens=agent_context_compression_trigger_tokens,
+            agent_context_protected_turns=agent_context_protected_turns,
             agent_event_monitor_enabled=os.getenv('AGENT_EVENT_MONITOR_ENABLED', 'false').lower() == 'true',
             agent_event_monitor_interval_minutes=parse_env_int(
                 os.getenv('AGENT_EVENT_MONITOR_INTERVAL_MINUTES'),

@@ -10,7 +10,8 @@ import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '.
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
-import { ReportMarkdown, ReportSummary } from '../components/report';
+import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer';
+import { ReportSummary } from '../components/report/ReportSummary';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import type { SetupStatusResponse } from '../types/systemConfig';
@@ -96,6 +97,7 @@ const HomePage: React.FC = () => {
     syncTaskCreated,
     syncTaskUpdated,
     syncTaskFailed,
+    refreshActiveTasks,
     removeTask,
     openMarkdownDrawer,
     closeMarkdownDrawer,
@@ -290,6 +292,7 @@ const HomePage: React.FC = () => {
     syncTaskCreated,
     syncTaskUpdated,
     syncTaskFailed,
+    refreshActiveTasks,
     removeTask,
   });
 
@@ -844,7 +847,8 @@ const HomePage: React.FC = () => {
       </div>
 
       {markdownDrawerOpen && selectedReport?.meta.id ? (
-        <ReportMarkdown
+        <ReportMarkdownDrawer
+          key={selectedReport.meta.id}
           recordId={selectedReport.meta.id}
           stockName={selectedReport.meta.stockName || ''}
           stockCode={selectedReport.meta.stockCode}

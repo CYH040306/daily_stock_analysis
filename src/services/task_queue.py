@@ -27,6 +27,11 @@ if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
+from src.services.run_diagnostics import (
+    activate_run_diagnostic_context,
+    get_current_diagnostic_context,
+    reset_run_diagnostic_context,
+)
 from src.utils.analysis_metadata import SELECTION_SOURCES
 
 logger = logging.getLogger(__name__)
@@ -72,11 +77,13 @@ class TaskInfo:
     original_query: Optional[str] = None
     selection_source: Optional[str] = None
     skills: Optional[List[str]] = None
+    trace_id: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
         return {
             "task_id": self.task_id,
+            "trace_id": self.trace_id or self.task_id,
             "stock_code": self.stock_code,
             "stock_name": self.stock_name,
             "status": self.status.value,
@@ -110,6 +117,7 @@ class TaskInfo:
             original_query=self.original_query,
             selection_source=self.selection_source,
             skills=list(self.skills) if self.skills is not None else None,
+            trace_id=self.trace_id or self.task_id,
         )
 
 
@@ -379,6 +387,7 @@ class AnalysisTaskQueue:
                 task_skills = list(skills) if skills is not None else None
                 task_info = TaskInfo(
                     task_id=task_id,
+                    trace_id=task_id,
                     stock_code=stock_code,
                     stock_name=stock_name,
                     status=TaskStatus.PENDING,
@@ -428,6 +437,7 @@ class AnalysisTaskQueue:
         report_type: str = "detailed",
         message: Optional[str] = "任务已加入队列",
         task_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
     ) -> TaskInfo:
         """
         Submit a generic background callable with task lifecycle tracking.
@@ -438,6 +448,7 @@ class AnalysisTaskQueue:
         task_id = task_id or uuid.uuid4().hex
         task_info = TaskInfo(
             task_id=task_id,
+            trace_id=trace_id or task_id,
             stock_code=stock_code,
             stock_name=stock_name,
             status=TaskStatus.PENDING,
@@ -601,6 +612,7 @@ class AnalysisTaskQueue:
             task = self._tasks.get(task_id)
             if not task:
                 return None
+            trace_id = task.trace_id or task_id
             task.status = TaskStatus.PROCESSING
             task.started_at = datetime.now()
             task.message = "正在分析中..."
@@ -618,15 +630,27 @@ class AnalysisTaskQueue:
             def _on_progress(progress: int, message: str) -> None:
                 self.update_task_progress(task_id, progress, message)
 
+            diag_token = None
+            if get_current_diagnostic_context() is None:
+                diag_token = activate_run_diagnostic_context(
+                    trace_id=trace_id,
+                    task_id=task_id,
+                    query_id=task_id,
+                    stock_code=stock_code,
+                    trigger_source="api",
+                )
             result = service.analyze_stock(
                 stock_code=stock_code,
                 report_type=report_type,
                 force_refresh=force_refresh,
                 query_id=task_id,
+                trace_id=trace_id,
                 send_notification=notify,
                 progress_callback=_on_progress,
                 skills=skills,
             )
+            reset_run_diagnostic_context(diag_token)
+            diag_token = None
             
             if result:
                 # 更新任务状态为完成
@@ -657,6 +681,8 @@ class AnalysisTaskQueue:
                 raise Exception(service.last_error or "分析返回空结果")
                 
         except Exception as e:
+            if "diag_token" in locals():
+                reset_run_diagnostic_context(diag_token)
             error_msg = str(e)
             logger.error(f"[TaskQueue] 任务失败: {task_id} ({stock_code}), 错误: {error_msg}")
             
@@ -700,6 +726,7 @@ class AnalysisTaskQueue:
             if not task:
                 return None
 
+            trace_id = task.trace_id or task_id
             task.status = TaskStatus.PROCESSING
             task.started_at = datetime.now()
             task.message = "任务执行中"
@@ -707,7 +734,19 @@ class AnalysisTaskQueue:
             self._broadcast_event("task_started", task.to_dict())
 
         try:
-            result = run_task()
+            diag_token = None
+            if get_current_diagnostic_context() is None:
+                diag_token = activate_run_diagnostic_context(
+                    trace_id=trace_id,
+                    task_id=task_id,
+                    query_id=task_id,
+                    stock_code=task.stock_code,
+                    trigger_source="api",
+                )
+            try:
+                result = run_task()
+            finally:
+                reset_run_diagnostic_context(diag_token)
             if result is None:
                 raise RuntimeError("任务返回空结果，未生成可持久化内容")
 
