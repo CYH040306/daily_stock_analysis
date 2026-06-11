@@ -10,7 +10,7 @@
 3. 定义异步任务队列相关模型
 """
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Literal
 from enum import Enum
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -23,6 +23,9 @@ class TaskStatusEnum(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+AnalysisPhase = Literal["auto", "premarket", "intraday", "postmarket"]
 
 
 class AnalyzeRequest(BaseModel):
@@ -51,6 +54,10 @@ class AnalyzeRequest(BaseModel):
         False,
         description="是否使用异步模式"
     )
+    analysis_phase: AnalysisPhase = Field(
+        "auto",
+        description="分析阶段覆盖：auto(自动推断) / premarket(盘前) / intraday(盘中) / postmarket(盘后)",
+    )
     stock_name: Optional[str] = Field(
         None,
         description="用户选中的股票名称（自动补全时提供）",
@@ -71,6 +78,11 @@ class AnalyzeRequest(BaseModel):
         True,
         description="是否发送推送通知（Telegram/企业微信等）"
     )
+    report_language: Optional[Literal["zh", "en"]] = Field(
+        None,
+        validation_alias=AliasChoices("report_language", "reportLanguage"),
+        description="本次分析报告输出语言；未传时使用全局 REPORT_LANGUAGE",
+    )
     skills: Optional[List[str]] = Field(
         None,
         validation_alias=AliasChoices("skills", "strategies"),
@@ -84,10 +96,12 @@ class AnalyzeRequest(BaseModel):
             "report_type": "detailed",
             "force_refresh": False,
             "async_mode": False,
+            "analysis_phase": "auto",
             "stock_name": "贵州茅台",
             "original_query": "茅台",
             "selection_source": "autocomplete",
             "notify": True,
+            "report_language": "zh",
             "skills": ["bull_trend"]
         }
     })
@@ -99,6 +113,11 @@ class MarketReviewRequest(BaseModel):
     send_notification: bool = Field(
         True,
         description="是否在大盘复盘完成后发送推送通知",
+    )
+    report_language: Optional[Literal["zh", "en"]] = Field(
+        None,
+        validation_alias=AliasChoices("report_language", "reportLanguage"),
+        description="本次大盘复盘报告输出语言；未传时使用全局 REPORT_LANGUAGE",
     )
 
 
@@ -156,12 +175,14 @@ class TaskAccepted(BaseModel):
         pattern="^(pending|processing)$"
     )
     message: Optional[str] = Field(None, description="提示信息")
+    analysis_phase: AnalysisPhase = Field("auto", description="请求的分析阶段")
     
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "task_id": "task_abc123",
             "status": "pending",
-            "message": "Analysis task accepted"
+            "message": "Analysis task accepted",
+            "analysis_phase": "auto"
         }
     })
 
@@ -178,13 +199,15 @@ class BatchTaskAcceptedItem(BaseModel):
         pattern="^(pending|processing)$"
     )
     message: Optional[str] = Field(None, description="提示信息")
+    analysis_phase: AnalysisPhase = Field("auto", description="请求的分析阶段")
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "task_id": "task_abc123",
             "stock_code": "600519",
             "status": "pending",
-            "message": "分析任务已加入队列: 600519"
+            "message": "分析任务已加入队列: 600519",
+            "analysis_phase": "auto"
         }
     })
 
@@ -219,7 +242,8 @@ class BatchTaskAcceptedResponse(BaseModel):
                     "task_id": "task_abc123",
                     "stock_code": "600519",
                     "status": "pending",
-                    "message": "分析任务已加入队列: 600519"
+                    "message": "分析任务已加入队列: 600519",
+                    "analysis_phase": "auto"
                 }
             ],
             "duplicates": [
@@ -258,6 +282,10 @@ class TaskStatus(BaseModel):
         None,
         description="大盘复盘任务返回的报告文本（仅大盘复盘任务）",
     )
+    market_review_payload: Optional[Any] = Field(
+        None,
+        description="Structured market-review payload for API/Web consumers.",
+    )
     error: Optional[str] = Field(
         None, 
         description="错误信息（仅在 failed 时存在）"
@@ -268,6 +296,10 @@ class TaskStatus(BaseModel):
         None,
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
+    )
+    analysis_phase: Optional[AnalysisPhase] = Field(
+        None,
+        description="请求的分析阶段；无持久化字段的历史 DB fallback 可能为空",
     )
     skills: Optional[List[str]] = Field(None, description="本次任务使用的策略 skill ID 列表")
     
@@ -282,6 +314,7 @@ class TaskStatus(BaseModel):
             "stock_name": "贵州茅台",
             "original_query": "茅台",
             "selection_source": "autocomplete",
+            "analysis_phase": "auto",
             "skills": ["bull_trend"]
         }
     })
@@ -312,6 +345,7 @@ class TaskInfo(BaseModel):
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
     )
+    analysis_phase: AnalysisPhase = Field("auto", description="请求的分析阶段")
     skills: Optional[List[str]] = Field(None, description="本次任务使用的策略 skill ID 列表")
     
     model_config = ConfigDict(json_schema_extra={
@@ -329,6 +363,7 @@ class TaskInfo(BaseModel):
             "error": None,
             "original_query": "茅台",
             "selection_source": "autocomplete",
+            "analysis_phase": "auto",
             "skills": ["bull_trend"]
         }
     })

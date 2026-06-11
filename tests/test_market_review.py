@@ -102,6 +102,38 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         persist_history.assert_called_once()
         self.assertEqual(persist_history.call_args.kwargs["query_id"], None)
 
+    def test_run_market_review_passes_request_config_to_generation(self) -> None:
+        notifier = self._make_notifier()
+        request_config = SimpleNamespace(report_language="en", market_review_region="cn")
+        global_config = SimpleNamespace(report_language="zh", market_review_region="cn")
+        market_analyzer = MagicMock()
+        market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
+            report="English market review body",
+            market_light_snapshot={"region": "cn", "trade_date": "2026-04-10", "score": 60},
+        )
+
+        with patch.object(
+            market_review_module,
+            "get_config",
+            return_value=global_config,
+        ), patch.object(
+            market_review_module,
+            "MarketAnalyzer",
+            return_value=market_analyzer,
+        ) as analyzer_cls, patch.object(market_review_module, "_persist_market_review_history") as persist_history:
+            result = run_market_review(
+                notifier,
+                config=request_config,
+                send_notification=False,
+                return_structured=True,
+            )
+
+        self.assertEqual(analyzer_cls.call_args.kwargs["config"], request_config)
+        self.assertEqual(persist_history.call_args.kwargs["config"], request_config)
+        self.assertTrue(notifier.save_report_to_file.call_args.args[0].startswith("# 🎯 Market Review\n\n"))
+        self.assertEqual(result.market_review_payload["language"], "en")
+        self.assertEqual(result.report, "English market review body")
+
     def test_run_market_review_merges_both_regions_with_english_wrappers(self) -> None:
         notifier = self._make_notifier()
         cn_analyzer = MagicMock()
@@ -128,8 +160,8 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
             market_review_module,
             "MarketAnalyzer",
             side_effect=[cn_analyzer, hk_analyzer, us_analyzer],
-        ), patch.object(market_review_module, "_persist_market_review_history"):
-            result = run_market_review(notifier, send_notification=False)
+        ), patch.object(market_review_module, "_persist_market_review_history") as persist_history:
+            result = run_market_review(notifier, send_notification=True)
 
         self.assertIn("# A-share Market Recap\n\nCN body", result)
         self.assertIn("# HK Market Recap\n\nHK body", result)
@@ -137,7 +169,17 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertIn("# US Market Recap\n\nUS body", result)
         saved_content = notifier.save_report_to_file.call_args.args[0]
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
-        notifier.send.assert_not_called()
+        self.assertIn("# A-share Market Recap\n\nCN body", saved_content)
+        self.assertIn("> Next market recap follows", saved_content)
+        self.assertIn("# HK Market Recap\n\nHK body", saved_content)
+        self.assertIn("# US Market Recap\n\nUS body", saved_content)
+        self.assertIn(
+            "# A-share Market Recap\n\nCN body",
+            persist_history.call_args.kwargs["markdown_report"],
+        )
+        sent_content = notifier.send.call_args.args[0]
+        self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
+        self.assertIn("# US Market Recap\n\nUS body", sent_content)
 
     def test_run_market_review_comma_joined_subset_cn_us(self) -> None:
         """Regression: compute_effective_region("both", {"cn","us"}) -> "cn,us"
@@ -300,6 +342,24 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         snapshots = persist_history.call_args.kwargs["market_light_snapshots"]
         self.assertEqual(set(snapshots), {"cn"})
 
+    def test_render_market_review_payload_markdown_does_not_repeat_title(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "sections": [
+                    {
+                        "key": "daily_review",
+                        "title": "2026-06-03 大盘复盘",
+                        "markdown": "> 今日指数强弱分化。\n\n### 一、盘面总览\n正文",
+                    }
+                ],
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertEqual(markdown.count("2026-06-03 大盘复盘"), 1)
+        self.assertTrue(markdown.startswith("🎯 大盘复盘\n\n## 2026-06-03 大盘复盘"))
+
     def test_persist_market_review_history_saves_markdown_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             old_db_path = os.environ.get("DATABASE_PATH")
@@ -331,6 +391,12 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                             "data_quality": "ok",
                         }
                     },
+                    market_review_payload={
+                        "version": 1,
+                        "kind": "market_review",
+                        "region": "cn",
+                        "sections": [{"title": "今日大盘", "markdown": "复盘正文"}],
+                    },
                 )
 
                 self.assertEqual(saved, 1)
@@ -346,6 +412,7 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
                     self.assertEqual(row.news_content, "## 今日大盘\n\n复盘正文")
                     self.assertIn("# 🎯 大盘复盘", row.raw_result)
                     self.assertIn('"market_light_snapshots"', row.context_snapshot)
+                    self.assertIn('"market_review_payload"', row.context_snapshot)
                     self.assertIn('"trade_date": "2026-03-06"', row.context_snapshot)
             finally:
                 DatabaseManager.reset_instance()

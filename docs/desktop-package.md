@@ -189,20 +189,21 @@ npm install
 npm run build
 ```
 
-2) 打包 Python 后端
+2) 按现有脚本打包 Python 后端（脚本已内置 AlphaSift 依赖收集）
+
+- Windows：
 
 ```bash
-pip install pyinstaller
-pip install -r requirements.txt
-python -m PyInstaller --name stock_analysis --onefile --noconsole --add-data "static;static" --hidden-import=multipart --hidden-import=multipart.multipart main.py
+powershell -ExecutionPolicy Bypass -File scripts\build-backend.ps1
 ```
 
-将生成的 exe 复制到 `dist/backend/`：
+- macOS：
 
 ```bash
-mkdir dist\backend
-copy dist\stock_analysis.exe dist\backend\stock_analysis.exe
+bash scripts/build-backend-macos.sh
 ```
+
+该脚本会在安装依赖后执行 `--collect-all alphasift`，并校验打包产物中可导入 `alphasift.dsa_adapter`，避免分步命令遗漏内置 AlphaSift 模块。
 
 3) 打包 Electron 桌面应用
 
@@ -269,6 +270,7 @@ win-unpacked/
 
 - 应用在主界面加载完成后会后台检查 GitHub Releases 的最新正式版，并与当前 `app.getVersion()` 做语义化版本比较
 - Windows NSIS 安装版会通过内置 GitHub 更新源自动下载新版本；下载完成后弹出一次性提醒，用户确认后静默重启并安装
+- 自动更新静默安装会复用当前安装目录；如果用户安装时选择了非默认目录或带空格目录，后续自动更新仍会覆盖同一目录
 - `系统设置 -> 版本信息` 中的“桌面端更新”区域可手动检查更新；若更新已下载，会展示“重启安装”操作
 - Windows 免安装包、开发态和 macOS DMG 仍保持“提醒 + 跳转下载页”的兼容路径，不会因为网络失败而阻断桌面端启动
 - 版本检查失败、GitHub API 超时、更新元数据缺失或下载安装异常时，会记录到 `logs/desktop.log`，设置页手动检查时会展示错误状态

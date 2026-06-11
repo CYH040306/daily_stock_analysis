@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from src.core.config_registry import (
+    WEB_SETTINGS_HIDDEN_FROM_UI,
     build_schema_response,
     get_field_definition,
     get_registered_field_keys,
@@ -148,6 +149,14 @@ class TestAstrBotFieldsRegistered(unittest.TestCase):
             self.assertIn(key, field_keys, f"{key} missing from schema response")
 
 
+class TestAlphaSiftFieldsRegistered(unittest.TestCase):
+    def test_install_spec_is_sensitive(self):
+        field = get_field_definition("ALPHASIFT_INSTALL_SPEC")
+
+        self.assertTrue(field["is_sensitive"])
+        self.assertEqual(field["ui_control"], "password")
+
+
 class TestSettingsHelpMetadata(unittest.TestCase):
     """Field help metadata should be available for covered settings help slices."""
 
@@ -250,9 +259,16 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "DEBUG",
         "MAX_WORKERS",
         "ANALYSIS_DELAY",
+        "SAVE_CONTEXT_SNAPSHOT",
         "MARKET_REVIEW_ENABLED",
         "MARKET_REVIEW_REGION",
         "MARKET_REVIEW_COLOR_SCHEME",
+        # Issue #1512: stream, log, and WebUI startup fields
+        "DINGTALK_STREAM_ENABLED",
+        "FEISHU_STREAM_ENABLED",
+        "LOG_DIR",
+        "WEBUI_ENABLED",
+        "WEBUI_AUTO_BUILD",
     )
 
     def test_representative_fields_have_help_metadata(self):
@@ -285,6 +301,21 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         self.assertEqual(field["category"], "system")
         self.assertNotEqual(field["display_order"], 9000)
 
+    def test_save_context_snapshot_is_explicitly_registered(self):
+        field = get_field_definition("SAVE_CONTEXT_SNAPSHOT")
+
+        self.assertEqual(field["category"], "system")
+        self.assertEqual(field["data_type"], "boolean")
+        self.assertEqual(field["ui_control"], "switch")
+        self.assertFalse(field["is_sensitive"])
+        self.assertTrue(field["is_editable"])
+        self.assertEqual(field["default_value"], "true")
+        self.assertEqual(field["display_order"], 52)
+        self.assertEqual(field["help_key"], "settings.system.SAVE_CONTEXT_SNAPSHOT")
+        self.assertTrue(field.get("examples"))
+        self.assertTrue(field.get("docs"))
+        self.assertIn("analysis-context-pack.md#p6-", field["docs"][0]["href"])
+
     def test_restart_warning_codes_match_runtime_behavior(self):
         restart_required_keys = (
             "RUN_IMMEDIATELY",
@@ -292,6 +323,11 @@ class TestSettingsHelpMetadata(unittest.TestCase):
             "SCHEDULE_RUN_IMMEDIATELY",
             "WEBUI_HOST",
             "WEBUI_PORT",
+            "WEBUI_ENABLED",
+            "WEBUI_AUTO_BUILD",
+            "LOG_DIR",
+            "DINGTALK_STREAM_ENABLED",
+            "FEISHU_STREAM_ENABLED",
             "LOG_LEVEL",
         )
         for key in restart_required_keys:
@@ -316,6 +352,67 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         field = get_field_definition("ADMIN_AUTH_ENABLED")
         self.assertFalse(field["is_editable"])
         self.assertIn("auth_settings_endpoint_required", field.get("warning_codes", []))
+
+
+class TestIssue1512SettingsFields(unittest.TestCase):
+    """Issue #1512 visible fields must be explicitly registered."""
+
+    def test_stream_fields_are_registered_as_notification_switches(self) -> None:
+        expected = {
+            "FEISHU_STREAM_ENABLED": 17,
+            "DINGTALK_STREAM_ENABLED": 35,
+        }
+        for key, display_order in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "notification")
+            self.assertEqual(field["data_type"], "boolean")
+            self.assertEqual(field["ui_control"], "switch")
+            self.assertEqual(field["default_value"], "false")
+            self.assertEqual(field["display_order"], display_order)
+            self.assertTrue(field.get("help_key"))
+            self.assertTrue(field.get("examples"))
+            self.assertTrue(field.get("docs"))
+            self.assertIn("not_webhook_delivery", field.get("warning_codes", []))
+            self.assertIn("restart_required", field.get("warning_codes", []))
+
+    def test_system_runtime_fields_are_registered_with_restart_boundary(self) -> None:
+        expected = {
+            "LOG_DIR": ("string", "text", "./logs", 31),
+            "WEBUI_ENABLED": ("boolean", "switch", "false", 37),
+            "WEBUI_AUTO_BUILD": ("boolean", "switch", "true", 38),
+        }
+        for key, (data_type, ui_control, default_value, display_order) in expected.items():
+            field = get_field_definition(key)
+            self.assertEqual(field["category"], "system")
+            self.assertEqual(field["data_type"], data_type)
+            self.assertEqual(field["ui_control"], ui_control)
+            self.assertEqual(field["default_value"], default_value)
+            self.assertEqual(field["display_order"], display_order)
+            self.assertTrue(field.get("help_key"))
+            self.assertTrue(field.get("examples"))
+            self.assertTrue(field.get("docs"))
+            self.assertIn("restart_required", field.get("warning_codes", []))
+
+
+class TestEnvExampleWebSettingsCoverage(unittest.TestCase):
+    """Active .env.example keys must be registered or intentionally hidden."""
+
+    _ENV_EXAMPLE = Path(__file__).resolve().parents[1] / ".env.example"
+    _ACTIVE_ENV_ASSIGNMENT_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=")
+
+    def test_active_env_example_keys_are_registered_or_hidden_from_web_ui(self) -> None:
+        active_keys = {
+            match.group(1)
+            for line in self._ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+            for match in [self._ACTIVE_ENV_ASSIGNMENT_RE.match(line.strip())]
+            if match
+        }
+        registered_keys = set(get_registered_field_keys())
+
+        self.assertEqual(
+            sorted(active_keys - registered_keys - WEB_SETTINGS_HIDDEN_FROM_UI),
+            [],
+        )
 
 
 class TestSettingsHelpContract(unittest.TestCase):

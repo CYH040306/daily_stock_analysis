@@ -59,6 +59,35 @@ class TestAnalysisReportSchema(unittest.TestCase):
         self.assertIsNone(schema.dashboard)
         self.assertIsNone(schema.analysis_summary)
 
+    def test_schema_accepts_phase_decision_and_defaults_lists(self) -> None:
+        """Dashboard accepts the optional phase_decision contract."""
+        data = {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 70,
+            "trend_prediction": "震荡",
+            "operation_advice": "持有",
+            "dashboard": {
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "phase_decision": {
+                    "phase_context": {"phase": "intraday", "market": "cn"},
+                    "action_window": "盘中跟踪",
+                    "immediate_action": "等待确认",
+                    "next_check_time": "14:30",
+                    "confidence_reason": "数据质量可用",
+                },
+            },
+        }
+
+        schema = AnalysisReportSchema.model_validate(data)
+
+        self.assertIsNotNone(schema.dashboard)
+        phase_decision = schema.dashboard and schema.dashboard.phase_decision
+        self.assertIsNotNone(phase_decision)
+        if phase_decision:
+            self.assertEqual(phase_decision.watch_conditions, [])
+            self.assertEqual(phase_decision.data_limitations, [])
+            self.assertEqual(phase_decision.phase_context["phase"], "intraday")
+
     def test_schema_allows_numeric_strings(self) -> None:
         """Schema accepts string values for numeric fields (LLM may return N/A)."""
         data = {
@@ -131,6 +160,29 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
         self.assertEqual(result.name, "贵州茅台")
         self.assertEqual(result.sentiment_score, 72)
         self.assertEqual(result.analysis_summary, "技术面向好")
+        self.assertEqual(result.action, "hold")
+        self.assertEqual(result.action_label, "持有")
+
+    def test_parse_response_preserves_explicit_action_in_raw_result(self) -> None:
+        analyzer = GeminiAnalyzer()
+        response = json.dumps({
+            "stock_name": "贵州茅台",
+            "sentiment_score": 58,
+            "trend_prediction": "震荡",
+            "operation_advice": "持有观察",
+            "decision_type": "hold",
+            "action": "watch",
+            "analysis_summary": "等待确认",
+        })
+
+        result = analyzer._parse_response(response, "600519", "股票600519")
+        raw_result = result.to_dict()
+
+        self.assertEqual(result.action, "watch")
+        self.assertEqual(result.action_label, "观望")
+        self.assertEqual(result.decision_type, "hold")
+        self.assertEqual(raw_result["action"], "watch")
+        self.assertEqual(raw_result["action_label"], "观望")
 
     def test_parse_response_keeps_unknown_dashboard_fields(self) -> None:
         analyzer = GeminiAnalyzer()

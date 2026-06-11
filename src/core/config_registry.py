@@ -10,7 +10,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
-from src.config import AGENT_CONTEXT_COMPRESSION_PROFILES, AGENT_MAX_STEPS_DEFAULT
+from src.config import (
+    AGENT_CONTEXT_COMPRESSION_PROFILES,
+    AGENT_MAX_STEPS_DEFAULT,
+    DEFAULT_ALPHASIFT_INSTALL_SPEC,
+)
 from src.notification_noise import NOTIFICATION_SEVERITIES
 from src.notification_routing import ROUTABLE_NOTIFICATION_CHANNELS
 
@@ -66,6 +70,17 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
         "display_order": 99,
     },
 ]
+
+WEB_SETTINGS_HIDDEN_FROM_UI = {
+    "DATABASE_PATH",
+    "SQLITE_WAL_ENABLED",
+    "SQLITE_BUSY_TIMEOUT_MS",
+    "SQLITE_WRITE_RETRY_MAX",
+    "SQLITE_WRITE_RETRY_BASE_DELAY",
+    "USE_PROXY",
+    "PROXY_HOST",
+    "PROXY_PORT",
+}
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "STOCK_LIST": {
@@ -129,6 +144,18 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "label": "完整指南：AI 模型配置",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
             },
+            {
+                "label": "LiteLLM Providers（官方）",
+                "href": "https://docs.litellm.ai/docs/providers",
+            },
+            {
+                "label": "LiteLLM OpenAI-compatible（官方）",
+                "href": "https://docs.litellm.ai/docs/providers/openai_compatible",
+            },
+            {
+                "label": "LiteLLM model_list（官方）",
+                "href": "https://docs.litellm.ai/docs/proxy/configs#the-model_list-key",
+            },
         ],
         "warning_codes": ["provider_prefix_required"],
     },
@@ -189,6 +216,14 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
                 "label": "完整指南：AI 模型配置",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#ai-模型配置",
             },
+            {
+                "label": "LiteLLM Providers（官方）",
+                "href": "https://docs.litellm.ai/docs/providers",
+            },
+            {
+                "label": "LiteLLM config（官方）",
+                "href": "https://docs.litellm.ai/docs/proxy/configs",
+            },
         ],
         "warning_codes": ["fallback_models_must_be_available"],
     },
@@ -216,6 +251,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "LLM 配置指南：YAML 模式",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/LLM_CONFIG_GUIDE.md#方式三litellm-原生-yaml-配置适合专家或复杂路由",
+            },
+            {
+                "label": "LiteLLM proxy config（官方）",
+                "href": "https://docs.litellm.ai/docs/proxy/configs",
             },
         ],
         "warning_codes": ["yaml_config_overrides_channel_editor"],
@@ -248,6 +287,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "LLM 服务商配置速查",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/llm-providers.md",
+            },
+            {
+                "label": "LiteLLM OpenAI-compatible（官方）",
+                "href": "https://docs.litellm.ai/docs/providers/openai_compatible",
             },
         ],
         "warning_codes": ["channels_override_legacy_keys"],
@@ -464,6 +507,71 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             },
         ],
         "warning_codes": [],
+    },
+    "ALPHASIFT_ENABLED": {
+        "title": "AlphaSift Screening",
+        "description": "Enable the built-in AlphaSift stock screening tab. Disabled by default. This switch only affects the AlphaSift screening path; it does not migrate, sanitize, or clear existing LLM/runtime fields in `.env`.",
+        "category": "data_source",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 17,
+        "help_key": "settings.data_source.ALPHASIFT_ENABLED",
+        "examples": [
+            "ALPHASIFT_ENABLED=false",
+            "ALPHASIFT_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "LiteLLM Providers（官方）",
+                "href": "https://docs.litellm.ai/docs/providers",
+            },
+            {
+                "label": "LiteLLM OpenAI-compatible（官方）",
+                "href": "https://docs.litellm.ai/docs/providers/openai_compatible",
+            },
+            {
+                "label": "OpenAI 请求与鉴权（官方）",
+                "href": "https://platform.openai.com/docs/api-reference/authentication",
+            },
+            {
+                "label": "AlphaSift 集成说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
+            },
+        ],
+    },
+    "ALPHASIFT_INSTALL_SPEC": {
+        "title": "AlphaSift Install Spec",
+        "description": "Pinned AlphaSift pip source used for explicit repair installs and source verification. It is not used for normal runtime calls after startup dependency installation; runtime compatibility is built from DSA's resolved LLM/runtime context.",
+        "category": "data_source",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": DEFAULT_ALPHASIFT_INSTALL_SPEC,
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.data_source.ALPHASIFT_INSTALL_SPEC",
+        "examples": [
+            f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+        ],
+        "docs": [
+            {
+                "label": "requirements.txt（版本与依赖边界）",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/requirements.txt",
+            },
+            {
+                "label": "AlphaSift 集成说明",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/alphasift-integration.md",
+            },
+        ],
     },
     "REALTIME_SOURCE_PRIORITY": {
         "title": "Realtime Source Priority",
@@ -1170,6 +1278,34 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 30,
     },
+    "DINGTALK_STREAM_ENABLED": {
+        "title": "DingTalk Stream Mode",
+        "description": "Enable DingTalk application bot stream/long-connection mode. This is separate from DingTalk group webhook delivery.",
+        "category": "notification",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 35,
+        "help_key": "settings.notification.DINGTALK_STREAM_ENABLED",
+        "examples": [
+            "DINGTALK_STREAM_ENABLED=false",
+            "DINGTALK_STREAM_ENABLED=true",
+            "DINGTALK_APP_KEY=your_dingtalk_app_key",
+            "DINGTALK_APP_SECRET=your_dingtalk_app_secret",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：通知渠道配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#通知渠道详细配置",
+            },
+        ],
+        "warning_codes": ["not_webhook_delivery", "restart_required"],
+    },
     "PUSHPLUS_TOKEN": {
         "title": "PushPlus Token",
         "description": "Token for PushPlus notifications.",
@@ -1414,6 +1550,113 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 16,
+    },
+    "FEISHU_STREAM_ENABLED": {
+        "title": "Feishu Stream Mode",
+        "description": "Enable Feishu application bot stream mode. This is separate from Feishu group webhook delivery.",
+        "category": "notification",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 17,
+        "help_key": "settings.notification.FEISHU_STREAM_ENABLED",
+        "examples": [
+            "FEISHU_STREAM_ENABLED=false",
+            "FEISHU_STREAM_ENABLED=true",
+            "FEISHU_APP_ID=cli_xxxxx",
+            "FEISHU_APP_SECRET=your_feishu_app_secret",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：飞书通知配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
+            },
+            {
+                "label": "飞书机器人配置专题",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/bot/feishu-bot-config.md",
+            },
+        ],
+        "warning_codes": ["not_webhook_delivery", "restart_required"],
+    },
+    "FEISHU_CHAT_ID": {
+        "title": "Feishu Chat ID",
+        "description": "Target chat_id (group mode, oc_xxx) or open_id (P2P mode, ou_xxx) for Feishu App Bot notification delivery. Requires FEISHU_APP_ID + FEISHU_APP_SECRET.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 18,
+        "help_key": "settings.notification.FEISHU_CHAT_ID",
+        "examples": [
+            "FEISHU_CHAT_ID=oc_xxxxxxxxxxxxx",
+            "FEISHU_CHAT_ID=ou_xxxxxxxxxxxxx",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：飞书通知配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
+            },
+        ],
+    },
+    "FEISHU_RECEIVE_ID_TYPE": {
+        "title": "Feishu Receive ID Type",
+        "description": "Type of FEISHU_CHAT_ID: 'chat_id' for group chat, 'open_id' for P2P private message.",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "chat_id",
+        "options": [{"label": "chat_id (群聊)", "value": "chat_id"}, {"label": "open_id (私聊)", "value": "open_id"}],
+        "validation": {"enum": ["chat_id", "open_id"]},
+        "display_order": 19,
+        "help_key": "settings.notification.FEISHU_RECEIVE_ID_TYPE",
+        "examples": [
+            "FEISHU_RECEIVE_ID_TYPE=chat_id",
+            "FEISHU_RECEIVE_ID_TYPE=open_id",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：飞书通知配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
+            },
+        ],
+    },
+    "FEISHU_DOMAIN": {
+        "title": "Feishu Domain",
+        "description": "Feishu API domain: 'feishu' (feishu.cn for mainland China) or 'lark' (larksuite.com for international).",
+        "category": "notification",
+        "data_type": "string",
+        "ui_control": "select",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "feishu",
+        "options": [{"label": "feishu (飞书国内)", "value": "feishu"}, {"label": "lark (国际版)", "value": "lark"}],
+        "validation": {"enum": ["feishu", "lark"]},
+        "display_order": 20,
+        "help_key": "settings.notification.FEISHU_DOMAIN",
+        "examples": [
+            "FEISHU_DOMAIN=feishu",
+            "FEISHU_DOMAIN=lark",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：飞书通知配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#飞书",
+            },
+        ],
     },
     # ------------------------------------------------------------------
     # Notification – Telegram
@@ -2413,6 +2656,92 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["restart_required"],
     },
+    "LOG_DIR": {
+        "title": "Log Directory",
+        "description": "Directory for application logs. The runtime user or container must be able to write to this path.",
+        "category": "system",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "./logs",
+        "options": [],
+        "validation": {},
+        "display_order": 31,
+        "help_key": "settings.system.LOG_DIR",
+        "examples": [
+            "LOG_DIR=./logs",
+            "LOG_DIR=/app/logs",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：环境变量完整列表",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": ["restart_required", "path_must_be_writable"],
+    },
+    "WEBUI_ENABLED": {
+        "title": "Web UI Enabled",
+        "description": "Startup-time compatibility flag for default WebUI/API service mode. Saving this setting does not start or stop the current process.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "false",
+        "options": [],
+        "validation": {},
+        "display_order": 37,
+        "help_key": "settings.system.WEBUI_ENABLED",
+        "examples": [
+            "WEBUI_ENABLED=false",
+            "WEBUI_ENABLED=true",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：WebUI 与 API",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#webui-与-api-服务",
+            },
+            {
+                "label": "云服务器访问 WebUI",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/deploy-webui-cloud.md",
+            },
+        ],
+        "warning_codes": ["restart_required"],
+    },
+    "WEBUI_AUTO_BUILD": {
+        "title": "Web UI Auto Build",
+        "description": "Build or verify the Web frontend assets before backend WebUI startup. Disable only when assets are prebuilt.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 38,
+        "help_key": "settings.system.WEBUI_AUTO_BUILD",
+        "examples": [
+            "WEBUI_AUTO_BUILD=true",
+            "WEBUI_AUTO_BUILD=false",
+        ],
+        "docs": [
+            {
+                "label": "完整指南：WebUI 与 API",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#webui-与-api-服务",
+            },
+            {
+                "label": "云服务器访问 WebUI",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/deploy-webui-cloud.md",
+            },
+        ],
+        "warning_codes": ["restart_required", "requires_built_web_assets"],
+    },
     "WEBUI_HOST": {
         "title": "Web UI Host",
         "description": "Host address for Web UI service binding.",
@@ -2767,6 +3096,37 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             {
                 "label": "完整指南：环境变量完整列表",
                 "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#环境变量完整列表",
+            },
+        ],
+        "warning_codes": [],
+    },
+    "SAVE_CONTEXT_SNAPSHOT": {
+        "title": "Save Context Snapshot",
+        "description": "Persist the full analysis_history.context_snapshot for history/API/Web transparency. Disable only to stop storing snapshots; it does not disable AnalysisContextPack prompt summaries during the current run.",
+        "category": "system",
+        "data_type": "boolean",
+        "ui_control": "switch",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "true",
+        "options": [],
+        "validation": {},
+        "display_order": 52,
+        "help_key": "settings.system.SAVE_CONTEXT_SNAPSHOT",
+        "examples": [
+            "SAVE_CONTEXT_SNAPSHOT=true",
+            "SAVE_CONTEXT_SNAPSHOT=false",
+            "python main.py --no-context-snapshot",
+        ],
+        "docs": [
+            {
+                "label": "AnalysisContextPack P6 文档、迁移与回滚",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/analysis-context-pack.md#p6-文档迁移与回滚",
+            },
+            {
+                "label": "完整指南：其他配置",
+                "href": "https://github.com/ZhuLinsen/daily_stock_analysis/blob/main/docs/full-guide.md#其他配置",
             },
         ],
         "warning_codes": [],

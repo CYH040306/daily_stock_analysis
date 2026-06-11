@@ -1,6 +1,8 @@
 import type { SystemConfigCategory } from '../types/systemConfig';
+import type { UiLanguage } from '../i18n/uiText';
 
-const categoryTitleMap: Record<SystemConfigCategory, string> = {
+const categoryTitleMap: Record<UiLanguage, Record<SystemConfigCategory, string>> = {
+  zh: {
   base: '基础设置',
   data_source: '数据源',
   ai_model: 'AI 模型',
@@ -9,9 +11,21 @@ const categoryTitleMap: Record<SystemConfigCategory, string> = {
   agent: 'Agent 设置',
   backtest: '回测配置',
   uncategorized: '其他',
+  },
+  en: {
+    base: 'Base settings',
+    data_source: 'Data sources',
+    ai_model: 'AI models',
+    notification: 'Notifications',
+    system: 'System',
+    agent: 'Agent',
+    backtest: 'Backtest',
+    uncategorized: 'Other',
+  },
 };
 
-const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
+const categoryDescriptionMap: Record<UiLanguage, Partial<Record<SystemConfigCategory, string>>> = {
+  zh: {
   base: '管理自选股与基础运行参数。',
   data_source: '管理行情数据源与优先级策略。',
   ai_model: '管理模型服务、模型名称与推理参数。',
@@ -20,6 +34,17 @@ const categoryDescriptionMap: Partial<Record<SystemConfigCategory, string>> = {
   agent: '管理 Agent 模式、策略与多 Agent 编排配置。',
   backtest: '管理回测开关、评估窗口和引擎参数。',
   uncategorized: '其他未归类的配置项。',
+  },
+  en: {
+    base: 'Manage watchlists and base runtime parameters.',
+    data_source: 'Manage market data sources and priority strategies.',
+    ai_model: 'Manage model services, model names, and inference parameters.',
+    notification: 'Manage bots, webhooks, and notification delivery.',
+    system: 'Manage scheduling, logging, ports, and system parameters.',
+    agent: 'Manage Agent mode, strategies, and multi-agent orchestration.',
+    backtest: 'Manage backtest switches, evaluation windows, and engine parameters.',
+    uncategorized: 'Other uncategorized settings.',
+  },
 };
 
 const fieldTitleMap: Record<string, string> = {
@@ -30,7 +55,8 @@ const fieldTitleMap: Record<string, string> = {
   ANSPIRE_API_KEYS: 'Anspire API Keys',
   SERPAPI_API_KEYS: 'SerpAPI API Keys',
   BRAVE_API_KEYS: 'Brave API Keys',
-  SEARXNG_BASE_URLS: 'SearXNG Base URLs',
+  STOCK_INDEX_REMOTE_UPDATE_ENABLED: '股票索引远程更新',
+  SEARXNG_BASE_URLS: 'SearXNG 自建实例地址',
   SEARXNG_PUBLIC_INSTANCES_ENABLED: 'SearXNG 公共实例自动发现',
   MINIMAX_API_KEYS: 'MiniMax API Keys',
   NEWS_STRATEGY_PROFILE: '新闻策略窗口档位',
@@ -67,8 +93,10 @@ const fieldTitleMap: Record<string, string> = {
   FEISHU_WEBHOOK_KEYWORD: '飞书 Webhook 关键词',
   FEISHU_APP_ID: '飞书应用 App ID',
   FEISHU_APP_SECRET: '飞书应用 App Secret',
+  FEISHU_STREAM_ENABLED: '飞书 Stream 模式',
   DINGTALK_APP_KEY: '钉钉 App Key',
   DINGTALK_APP_SECRET: '钉钉 App Secret',
+  DINGTALK_STREAM_ENABLED: '钉钉 Stream 模式',
   TELEGRAM_BOT_TOKEN: 'Telegram Bot Token',
   TELEGRAM_CHAT_ID: 'Telegram Chat ID',
   TELEGRAM_MESSAGE_THREAD_ID: 'Telegram 话题 Thread ID',
@@ -129,10 +157,14 @@ const fieldTitleMap: Record<string, string> = {
   MARKET_REVIEW_REGION: '大盘复盘市场',
   MARKET_REVIEW_COLOR_SCHEME: '大盘复盘涨跌颜色',
   ANALYSIS_DELAY: '分析启动延迟（秒）',
+  SAVE_CONTEXT_SNAPSHOT: '保存分析上下文快照',
   SCHEDULE_TIME: '定时任务时间',
   DEBUG: '调试模式',
   HTTP_PROXY: 'HTTP 代理',
+  LOG_DIR: '日志目录',
   LOG_LEVEL: '日志级别',
+  WEBUI_ENABLED: '默认启动 WebUI',
+  WEBUI_AUTO_BUILD: '启动前自动构建前端',
   WEBUI_PORT: 'WebUI 端口',
   AGENT_MODE: '启用 Agent 策略问股',
   AGENT_MAX_STEPS: 'Agent 最大步数',
@@ -170,6 +202,7 @@ const fieldDescriptionMap: Record<string, string> = {
   ANSPIRE_API_KEYS: 'Anspire Open 密钥，支持逗号分隔多个；默认同时用于大模型网关和新闻检索。',
   SERPAPI_API_KEYS: '用于新闻检索的 SerpAPI 密钥，支持逗号分隔多个。',
   BRAVE_API_KEYS: '用于新闻检索的 Brave Search 密钥，支持逗号分隔多个。',
+  STOCK_INDEX_REMOTE_UPDATE_ENABLED: '控制是否从 GitHub main 远程刷新股票自动补全索引；失败会降级到本地缓存或内置索引，不影响主分析流程。',
   SEARXNG_BASE_URLS: 'SearXNG 自建实例地址（逗号分隔，无配额兜底，需在 settings.yml 启用 format: json）。',
   SEARXNG_PUBLIC_INSTANCES_ENABLED: '当未配置 SearXNG 自建实例时，自动从 searx.space 获取公共实例并轮询使用；设为 false 可禁用该默认行为。',
   MINIMAX_API_KEYS: '用于新闻检索的 MiniMax 密钥，支持逗号分隔多个（最低优先级）。',
@@ -207,8 +240,10 @@ const fieldDescriptionMap: Record<string, string> = {
   FEISHU_WEBHOOK_KEYWORD: '飞书群机器人安全设置里的“关键词”。填写后，系统会在每条飞书消息前自动补上该关键词。',
   FEISHU_APP_ID: '仅用于飞书应用机器人 / Stream Bot / 云文档等应用模式，不会直接开启群 Webhook 推送。',
   FEISHU_APP_SECRET: '仅用于飞书应用机器人 / Stream Bot / 云文档等应用模式，不会直接开启群 Webhook 推送。',
+  FEISHU_STREAM_ENABLED: '启用飞书应用机器人 / Stream Bot 长连接模式；不是飞书群 Webhook 推送开关，需配套 App ID/Secret 并重启相关进程。',
   DINGTALK_APP_KEY: '钉钉应用模式 App Key。',
   DINGTALK_APP_SECRET: '钉钉应用模式 App Secret。',
+  DINGTALK_STREAM_ENABLED: '启用钉钉应用机器人长连接模式；不是普通群机器人 Webhook 开关，需配套 App Key/Secret 并重启相关进程。',
   TELEGRAM_BOT_TOKEN: 'Telegram Bot Token（由 @BotFather 创建）。',
   TELEGRAM_CHAT_ID: 'Telegram 目标会话 ID（个人/群组/频道）。',
   TELEGRAM_MESSAGE_THREAD_ID: 'Telegram 群组 Topic Thread ID；未启用话题可留空。',
@@ -269,10 +304,14 @@ const fieldDescriptionMap: Record<string, string> = {
   MARKET_REVIEW_REGION: '大盘复盘默认市场区域（如 cn/us/hk）。',
   MARKET_REVIEW_COLOR_SCHEME: '控制大盘复盘指数涨跌幅图标颜色：green_up 为绿涨红跌，red_up 为红涨绿跌。',
   ANALYSIS_DELAY: '启动任务前的延迟秒数，可用于等待依赖服务就绪。',
+  SAVE_CONTEXT_SNAPSHOT: '控制是否持久化整份分析历史 context_snapshot；关闭后不会保存低敏输入概览、市场阶段摘要和增强上下文，但不影响当次分析的 pack 构建或 Prompt 摘要。',
   SCHEDULE_TIME: '每日定时任务执行时间，格式为 HH:MM。',
   DEBUG: '启用调试模式，输出更多诊断日志。',
   HTTP_PROXY: '网络代理地址，可留空。',
+  LOG_DIR: '应用日志输出目录；需对运行用户或容器可写，修改后通常需要重启进程才完全生效。',
   LOG_LEVEL: '设置日志输出级别。',
+  WEBUI_ENABLED: '启动期兼容开关，控制后续默认入口是否进入 WebUI/API 服务模式；保存后不会立即启动或关闭当前 WebUI。',
+  WEBUI_AUTO_BUILD: '后端启动 WebUI 前是否自动检查并构建前端静态产物；关闭前需确认产物已预构建，保存后需重启生效。',
   WEBUI_PORT: 'Web 页面服务监听端口。',
   AGENT_MODE: '是否启用 ReAct Agent 策略问股。对外文案仍叫“策略”，内部配置字段统一使用 skill。',
   AGENT_MAX_STEPS: 'Agent 最大推理步数上限。保持默认 10 时，各子 Agent 按自身预设步数运行；调高到高于默认值时，所有子 Agent 统一采用该值；调低到低于某子 Agent 默认值时，该 Agent 会被封顶。',
@@ -367,16 +406,89 @@ const fieldOptionLabelMap: Record<string, Record<string, string>> = {
   },
 };
 
+const fieldOptionLabelMapEn: Record<string, Record<string, string>> = {
+  NEWS_STRATEGY_PROFILE: {
+    ultra_short: 'Ultra short (1 day)',
+    short: 'Short (3 days)',
+    medium: 'Medium (7 days)',
+    long: 'Long (30 days)',
+  },
+  REPORT_TYPE: {
+    simple: 'Simple',
+    full: 'Full',
+    brief: 'Brief',
+  },
+  REPORT_LANGUAGE: {
+    zh: 'Chinese',
+    en: 'English',
+    chinese: 'Chinese',
+    english: 'English',
+  },
+  NOTIFICATION_MIN_SEVERITY: {
+    '': 'Not set',
+    'not set': 'Not set',
+    info: 'Info',
+    warning: 'Warning',
+    error: 'Error',
+    critical: 'Critical',
+  },
+  MARKET_REVIEW_COLOR_SCHEME: {
+    green_up: 'Green up / red down',
+    red_up: 'Red up / green down',
+    'green up / red down': 'Green up / red down',
+    'red up / green down': 'Red up / green down',
+  },
+  LOG_LEVEL: {
+    debug: 'Debug',
+    info: 'Info',
+    warning: 'Warning',
+    error: 'Error',
+    critical: 'Critical',
+  },
+  MARKET_REVIEW_REGION: {
+    cn: 'A-shares',
+    hk: 'Hong Kong',
+    us: 'US',
+    both: 'All markets',
+  },
+  AGENT_ARCH: {
+    single: 'Single Agent',
+    multi: 'Multi Agent (orchestrator)',
+    'single agent': 'Single Agent',
+    'multi agent (orchestrator)': 'Multi Agent (orchestrator)',
+  },
+  AGENT_ORCHESTRATOR_MODE: {
+    quick: 'Quick',
+    standard: 'Standard',
+    full: 'Full',
+    specialist: 'Specialist',
+  },
+  AGENT_SKILL_ROUTING: {
+    auto: 'Auto (regime-based)',
+    manual: 'Manual (use AGENT_SKILLS)',
+    'auto (regime-based)': 'Auto (regime-based)',
+    'manual (use agent_skills)': 'Manual (use AGENT_SKILLS)',
+  },
+};
+
 function normalizeOptionToken(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
 export function getCategoryTitleZh(category: SystemConfigCategory, fallback?: string): string {
-  return categoryTitleMap[category] || fallback || category;
+  return getCategoryTitle(category, fallback, 'zh');
 }
 
 export function getCategoryDescriptionZh(category: SystemConfigCategory, fallback?: string): string {
-  return categoryDescriptionMap[category] || fallback || '';
+  return getCategoryDescription(category, fallback, 'zh');
+}
+
+export function getCategoryTitle(category: SystemConfigCategory, fallback?: string, locale: UiLanguage = 'zh'): string {
+  return categoryTitleMap[locale][category] || fallback || category;
+}
+
+export function getCategoryDescription(category: SystemConfigCategory, fallback?: string, locale: UiLanguage = 'zh'): string {
+  return categoryDescriptionMap[locale][category] || fallback || '';
 }
 
 export function getFieldTitleZh(key: string, fallback?: string): string {
@@ -388,7 +500,16 @@ export function getFieldDescriptionZh(key: string, fallback?: string): string {
 }
 
 export function getFieldOptionLabelZh(key: string, value: string, fallbackLabel?: string): string {
-  const map = fieldOptionLabelMap[key];
+  return getFieldOptionLabel(key, value, fallbackLabel, 'zh');
+}
+
+export function getFieldOptionLabel(
+  key: string,
+  value: string,
+  fallbackLabel?: string,
+  locale: UiLanguage = 'zh',
+): string {
+  const map = locale === 'en' ? fieldOptionLabelMapEn[key] : fieldOptionLabelMap[key];
   if (!map) {
     return fallbackLabel ?? value;
   }

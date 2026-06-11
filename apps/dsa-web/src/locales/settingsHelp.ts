@@ -176,6 +176,22 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 Web 自动补全和后端股票名称解析使用的股票简称新鲜度。'],
     notes: ['远程下载失败时会继续使用已有缓存或随应用打包的内置索引。'],
   },
+  'settings.data_source.ALPHASIFT_ENABLED': {
+    title: 'AlphaSift 选股',
+    summary: '控制是否启用内置 AlphaSift 选股页。',
+    usage: '默认关闭。设为 true 后，Web 会检查随后端依赖安装的 alphasift.dsa_adapter；若缺失，请先执行 pip install -r requirements.txt 或重建后端产物。',
+    valueNotes: ['AlphaSift 作为 DSA 后端依赖安装，/install 仅作为显式修复入口保留。', '选股结果仅用于研究辅助，不构成投资建议。'],
+    impact: ['影响 Web 选股入口、AlphaSift 策略读取和选股 API。'],
+    notes: ['AlphaSift 初筛候选，DSA 补充行情、基本面和新闻上下文；关闭时不影响原有分析、报告和通知流程。'],
+  },
+  'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
+    title: 'AlphaSift 安装来源',
+    summary: '配置显式修复安装使用的受信任 AlphaSift pip 来源。',
+    usage: '默认固定到已验证的 ZhuLinsen/alphasift commit；正常部署通过 requirements 安装，只有手动调用修复安装入口时才使用该来源。',
+    valueNotes: ['自定义本地路径或 wheel 不会走修复安装；请先手动安装到当前后端 Python 环境。', '该字段按敏感值处理，设置页不会直接展示完整内容。'],
+    impact: ['影响 AlphaSift 适配层来源校验和显式修复安装。'],
+    notes: ['请确认来源可信；AlphaSift 是实验性质选股能力，启用前应理解相关风险。'],
+  },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: '实时行情源优先级',
     summary: '配置多个实时行情源的尝试顺序。',
@@ -258,6 +274,80 @@ const settingsHelpZhCN: SettingsHelpMap = {
     notes: [
       '不要把 FEISHU_APP_SECRET 当作 FEISHU_WEBHOOK_SECRET 使用。',
       '如果飞书侧配置 IP 白名单，需要确认当前运行环境出口 IP 已加入白名单。',
+    ],
+  },
+  'settings.notification.FEISHU_STREAM_ENABLED': {
+    title: '飞书 Stream 模式',
+    summary: '启用飞书应用机器人 / Stream Bot 长连接模式，不是飞书群 Webhook 推送开关。',
+    usage: '只有在已创建飞书应用、完成应用发布、权限和事件订阅配置后才开启；同时需要 FEISHU_APP_ID 和 FEISHU_APP_SECRET。',
+    valueNotes: [
+      'true 表示允许运行时使用应用机器人 Stream 模式。',
+      'false 表示不启用 Stream 模式；群消息推送仍应使用 FEISHU_WEBHOOK_URL。',
+      '只填写 App ID/Secret 或只开启 Stream，不等于启用群 Webhook 推送。',
+    ],
+    impact: [
+      '影响飞书应用机器人交互或 Stream Bot 链路。',
+      '不会改变 FEISHU_WEBHOOK_URL 的群机器人 Webhook 推送语义。',
+    ],
+    notes: [
+      '保存后通常需要重启相关 bot/服务进程，已运行的长连接不会自动重建。',
+      '失败只应影响飞书应用机器人链路，不应拖垮主分析流程。',
+    ],
+  },
+  'settings.notification.FEISHU_CHAT_ID': {
+    title: '飞书 App Bot 推送目标',
+    summary: '配置飞书应用机器人主动推送的目标 chat_id（群聊模式）或 open_id（私聊模式）。',
+    usage: '需要同时填写 FEISHU_APP_ID 和 FEISHU_APP_SECRET。群聊模式填写 oc_ 开头的 chat_id；私聊模式填写 ou_ 开头的 open_id 并将 FEISHU_RECEIVE_ID_TYPE 设为 open_id。',
+    valueNotes: [
+      '仅凭 FEISHU_APP_ID / FEISHU_APP_SECRET 不会自动启用群 Webhook 推送。',
+      'App Bot 模式与 Webhook 模式互斥：Webhook URL 优先，未配置 Webhook 时才走 App Bot。',
+    ],
+    impact: [
+      '影响飞书 App Bot 通知渠道的送达目标。',
+      '失败时不应拖垮主分析流程，只影响该渠道送达。',
+    ],
+    notes: [
+      'App Bot 需要应用拥有 im:message:send_as_bot 权限。',
+      '私聊需要用户在飞书端主动打开过与应用机器人的对话框。',
+    ],
+  },
+  'settings.notification.FEISHU_RECEIVE_ID_TYPE': {
+    title: '飞书接收方 ID 类型',
+    summary: '指定 FEISHU_CHAT_ID 的类型：chat_id 表示群聊，open_id 表示私聊。',
+    usage: '群聊选择 chat_id；私聊（给指定用户发 P2P 消息）选择 open_id。',
+    valueNotes: [
+      '仅当 FEISHU_CHAT_ID 已填写时生效。',
+      '填错类型会导致消息发送失败；如果收到 invalid receive_id 错误，需要确认该值与前端的实际 ID 类型一致。',
+    ],
+    impact: ['影响飞书 App Bot 消息的路由方式。'],
+    notes: ['大多数场景使用 chat_id 即可；如果值不是 chat_id 或 open_id，运行时会自动回退到 chat_id。'],
+  },
+  'settings.notification.FEISHU_DOMAIN': {
+    title: '飞书 API 域名',
+    summary: '选择飞书 API 的区域：feishu 对应飞书国内版（feishu.cn），lark 对应 Lark 国际版（larksuite.com）。',
+    usage: '国内用户选择 feishu；海外 / Lark 用户选择 lark。',
+    valueNotes: [
+      '仅影响 App Bot 主动推送的 API 调用域名，不影响 Webhook URL。',
+      '选错会导致 API 调用失败（SDK 连错服务器）。',
+    ],
+    impact: ['影响飞书 App Bot 主动推送的 API 连通性。'],
+    notes: ['如果值不是 feishu 或 lark，运行时会自动回退到 feishu。'],
+  },
+  'settings.notification.DINGTALK_STREAM_ENABLED': {
+    title: '钉钉 Stream 模式',
+    summary: '启用钉钉应用机器人长连接模式，不是普通钉钉群机器人 Webhook 开关。',
+    usage: '需要先在钉钉开放平台配置应用机器人，并填写 DINGTALK_APP_KEY 和 DINGTALK_APP_SECRET。',
+    valueNotes: [
+      'true 表示允许运行时使用钉钉应用机器人 Stream/长连接模式。',
+      'false 表示不启用该长连接模式；自定义 Webhook 中的钉钉群机器人地址仍走 CUSTOM_WEBHOOK_URLS。',
+    ],
+    impact: [
+      '影响钉钉应用机器人交互或长连接链路。',
+      '不会改变自定义 Webhook 通知的发送路径。',
+    ],
+    notes: [
+      '保存后通常需要重启相关 bot/服务进程，已运行的长连接不会自动重建。',
+      '不要把 Stream 模式和群机器人 Webhook 混为一条配置路径。',
     ],
   },
   'settings.notification.webhooks': {
@@ -354,6 +444,54 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响重启后浏览器访问 WebUI 的 URL 端口。'],
     notes: ['修改 WEBUI_PORT 后需要重启当前进程、Docker 容器或服务管理器才会生效。'],
   },
+  'settings.system.LOG_DIR': {
+    title: '日志目录',
+    summary: '配置应用日志输出目录。',
+    usage: '填写运行用户或容器可写的目录路径；本地默认 ./logs，容器内常见路径为 /app/logs。',
+    valueNotes: [
+      '相对路径按运行进程的工作目录解析。',
+      'Longbridge SDK 等组件也可能在该目录下写入日志文件。',
+    ],
+    impact: [
+      '影响应用日志、部分 SDK 日志和排障文件的落盘位置。',
+    ],
+    notes: [
+      '修改后通常需要重启进程，已初始化的 logger 不一定会立即切换目录。',
+      'Docker、桌面端和本地源码运行的可写路径不同，保存前需确认权限。',
+    ],
+  },
+  'settings.system.WEBUI_ENABLED': {
+    title: '默认启动 WebUI',
+    summary: '控制启动期是否默认进入 WebUI/API 服务模式。',
+    usage: '这是兼容旧启动入口的启动期配置；保存后不会让当前页面立即启动或关闭 WebUI。',
+    valueNotes: [
+      'true 表示后续按默认入口启动时倾向进入 WebUI/API 服务模式。',
+      'false 表示保持非 WebUI 默认启动行为；显式 CLI 参数仍可能覆盖该配置。',
+    ],
+    impact: [
+      '影响 main.py 或相关服务入口下一次启动时的默认模式。',
+    ],
+    notes: [
+      '保存后需要重启相关进程才会生效。',
+      '不要把该开关理解为当前 Web 设置页的即时启停按钮。',
+    ],
+  },
+  'settings.system.WEBUI_AUTO_BUILD': {
+    title: '启动前自动构建前端',
+    summary: '控制后端启动 WebUI 前是否自动检查并构建前端静态产物。',
+    usage: '源码部署通常保持 true；已预构建镜像、离线环境或受限环境可设为 false。',
+    valueNotes: [
+      'true 时启动流程会尝试准备 apps/dsa-web 静态产物。',
+      'false 时只检查已有构建产物；如果产物缺失，WebUI 可能不可用或只看到后端警告。',
+    ],
+    impact: [
+      '影响 WebUI 下一次启动时前端静态资源是否自动准备。',
+    ],
+    notes: [
+      '保存后不会立即触发构建，需要重启相关后端进程。',
+      '在 Docker 或发布包中关闭前，请确认构建产物已经随镜像或安装包提供。',
+    ],
+  },
   'settings.system.ADMIN_AUTH_ENABLED': {
     title: 'Web 登录保护',
     summary: '启用 WebUI 管理员密码保护。',
@@ -401,7 +539,7 @@ const settingsHelpZhCN: SettingsHelpMap = {
     summary: '控制非交易日是否跳过分析。',
     usage: '默认 true；需要强制运行可设为 false 或使用 --force-run。',
     valueNotes: ['会结合市场日历判断 A 股、港股、美股等市场是否开市。'],
-    impact: ['影响定时任务和手动运行是否在休市日执行。'],
+    impact: ['影响定时任务、CLI 和 GitHub Actions 手动运行是否在休市日执行；Web/API 大盘复盘按钮会直接提交任务。'],
     notes: ['关闭后休市日可能生成缺少实时行情的报告。'],
   },
   'settings.system.HTTP_PROXY': {
@@ -863,6 +1001,18 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响分析总耗时。'],
     notes: ['总耗时 ≈ 股票数 × 单股耗时 + (股票数-1) × ANALYSIS_DELAY。'],
   },
+  'settings.system.SAVE_CONTEXT_SNAPSHOT': {
+    title: '保存分析上下文快照',
+    summary: '控制是否将分析历史的整份 context_snapshot 持久化到数据库。',
+    usage: '默认开启。关闭后，新历史记录不会保存 enhanced_context、market_phase_summary、AnalysisContextPack overview 或运行诊断快照等 context_snapshot 内容。',
+    valueNotes: [
+      '关闭后，新历史记录的历史详情、completed 任务状态和 Web 报告页无法读取低敏输入数据块摘要。',
+      '该开关不关闭当次 AnalysisContextPack 构建，也不关闭 LLM Prompt 中的低敏 pack summary。',
+      'CLI 的 --no-context-snapshot 与设为 false 的持久化效果一致。',
+    ],
+    impact: ['影响历史透明度、回测/诊断可用的上下文快照信息和 Web 报告页的数据来源摘要。'],
+    notes: ['若需要完全关闭 P3-P5 pack 接入，需要回滚相关代码；当前没有运行时 pack 总开关。'],
+  },
   'settings.system.market_review': {
     title: '大盘分析',
     summary: '控制大盘分析功能的开关、覆盖市场和配色方案。',
@@ -1013,6 +1163,22 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects stock-name freshness for Web autocomplete and backend stock-name resolution.'],
     notes: ['When remote download fails, the app keeps using an existing cache or the bundled index.'],
   },
+  'settings.data_source.ALPHASIFT_ENABLED': {
+    title: 'AlphaSift Screening',
+    summary: 'Controls the built-in AlphaSift stock screening page.',
+    usage: 'Disabled by default. When true, the Web app checks alphasift.dsa_adapter installed with backend dependencies; if it is missing, run pip install -r requirements.txt or rebuild the backend artifact.',
+    valueNotes: ['AlphaSift is installed as a DSA backend dependency; /install is retained only as an explicit repair action.', 'Screening output is for research support only and is not investment advice.'],
+    impact: ['Affects the Web screening entry, AlphaSift strategy loading, and screening API.'],
+    notes: ['AlphaSift generates candidates, while DSA enriches them with quote, fundamental, and news context; disabling it does not affect existing analysis, reports, or notifications.'],
+  },
+  'settings.data_source.ALPHASIFT_INSTALL_SPEC': {
+    title: 'AlphaSift Install Source',
+    summary: 'Configures the trusted AlphaSift pip source used by explicit repair installs.',
+    usage: 'Defaults to a verified ZhuLinsen/alphasift commit. Normal deployments install AlphaSift through requirements; this source is used only when the repair install endpoint is called manually.',
+    valueNotes: ['Custom local paths or wheels are not handled by the repair endpoint; install them into the backend Python environment first.', 'This field is treated as sensitive, so the settings page does not show the full value.'],
+    impact: ['Affects AlphaSift adapter source validation and explicit repair installs.'],
+    notes: ['Use a trusted source only. AlphaSift is an experimental screening capability, so understand the risk before enabling it.'],
+  },
   'settings.data_source.REALTIME_SOURCE_PRIORITY': {
     title: 'Realtime Source Priority',
     summary: 'Configures the provider order for realtime quotes.',
@@ -1090,6 +1256,80 @@ const settingsHelpEnUS: SettingsHelpMap = {
     notes: [
       'Do not use FEISHU_APP_SECRET as FEISHU_WEBHOOK_SECRET.',
       'If IP allowlisting is enabled in Feishu, add the outbound IP of your runtime environment.',
+    ],
+  },
+  'settings.notification.FEISHU_STREAM_ENABLED': {
+    title: 'Feishu Stream Mode',
+    summary: 'Enables Feishu application bot / Stream Bot long-connection mode. It is not the Feishu group webhook switch.',
+    usage: 'Enable it only after the Feishu app is created, published, granted permissions, and configured for events. FEISHU_APP_ID and FEISHU_APP_SECRET are also required.',
+    valueNotes: [
+      'true allows runtime Feishu app bot stream mode.',
+      'false disables stream mode; group message delivery still uses FEISHU_WEBHOOK_URL.',
+      'App credentials or this switch alone do not enable group webhook delivery.',
+    ],
+    impact: [
+      'Affects Feishu application bot interaction or Stream Bot paths.',
+      'Does not change FEISHU_WEBHOOK_URL group webhook delivery semantics.',
+    ],
+    notes: [
+      'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
+      'Failures should affect only the Feishu app bot path, not the main analysis flow.',
+    ],
+  },
+  'settings.notification.FEISHU_CHAT_ID': {
+    title: 'Feishu App Bot Push Target',
+    summary: 'Configures the target chat_id (group mode) or open_id (P2P mode) for Feishu App Bot notification delivery.',
+    usage: 'FEISHU_APP_ID and FEISHU_APP_SECRET must also be configured. For groups, use a chat_id starting with oc_. For P2P, use an open_id starting with ou_ and set FEISHU_RECEIVE_ID_TYPE to open_id.',
+    valueNotes: [
+      'FEISHU_APP_ID / FEISHU_APP_SECRET alone do not enable group webhook delivery.',
+      'App Bot mode and Webhook mode are mutually exclusive: webhook URL takes priority; App Bot is used only when no webhook URL is configured.',
+    ],
+    impact: [
+      'Affects the target destination for the Feishu App Bot notification channel.',
+      'Delivery failure should not block the main analysis flow.',
+    ],
+    notes: [
+      'The app bot needs the im:message:send_as_bot permission.',
+      'For P2P messages, the target user must have previously opened the conversation with the app bot in Feishu.',
+    ],
+  },
+  'settings.notification.FEISHU_RECEIVE_ID_TYPE': {
+    title: 'Feishu Receive ID Type',
+    summary: 'Specifies the type of FEISHU_CHAT_ID: chat_id for group chat, open_id for P2P private message.',
+    usage: 'Choose chat_id for groups; choose open_id for sending P2P messages to a specific user.',
+    valueNotes: [
+      'Only takes effect when FEISHU_CHAT_ID is also configured.',
+      'If the type does not match the actual ID, sending will fail with an invalid receive_id error.',
+    ],
+    impact: ['Affects the routing of Feishu App Bot messages.'],
+    notes: ['chat_id covers most use cases. If the value is neither chat_id nor open_id, the runtime falls back to chat_id.'],
+  },
+  'settings.notification.FEISHU_DOMAIN': {
+    title: 'Feishu API Domain',
+    summary: 'Selects the Feishu API region: feishu for mainland China (feishu.cn), lark for international (larksuite.com).',
+    usage: 'Mainland China users choose feishu; international / Lark users choose lark.',
+    valueNotes: [
+      'Only affects the API domain used by App Bot notification delivery; does not affect webhook URLs.',
+      'Choosing the wrong domain causes API errors (SDK connects to the wrong server).',
+    ],
+    impact: ['Affects API connectivity for Feishu App Bot notification delivery.'],
+    notes: ['If the value is neither feishu nor lark, the runtime falls back to feishu.'],
+  },
+  'settings.notification.DINGTALK_STREAM_ENABLED': {
+    title: 'DingTalk Stream Mode',
+    summary: 'Enables DingTalk application bot long-connection mode. It is not the regular DingTalk group webhook switch.',
+    usage: 'Configure a DingTalk application bot first, then provide DINGTALK_APP_KEY and DINGTALK_APP_SECRET.',
+    valueNotes: [
+      'true allows runtime DingTalk app bot stream/long-connection mode.',
+      'false disables that long-connection mode; DingTalk group webhook URLs in CUSTOM_WEBHOOK_URLS still use the custom webhook path.',
+    ],
+    impact: [
+      'Affects DingTalk application bot interaction or long-connection paths.',
+      'Does not change custom webhook notification delivery.',
+    ],
+    notes: [
+      'Restart the relevant bot/service process after saving; existing long connections are not rebuilt automatically.',
+      'Do not treat Stream mode and group bot Webhook as the same delivery path.',
     ],
   },
   'settings.notification.webhooks': {
@@ -1175,6 +1415,48 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects the browser URL used to open WebUI after restart.'],
     notes: ['Restart the process, Docker container, or service manager after changing WEBUI_PORT.'],
   },
+  'settings.system.LOG_DIR': {
+    title: 'Log Directory',
+    summary: 'Configures where application logs are written.',
+    usage: 'Use a directory writable by the runtime user or container. The local default is ./logs; container deployments often use /app/logs.',
+    valueNotes: [
+      'Relative paths are resolved from the process working directory.',
+      'Components such as the Longbridge SDK can also write log files under this directory.',
+    ],
+    impact: ['Affects application logs, some SDK logs, and troubleshooting files.'],
+    notes: [
+      'Restart the process after changing this field; already initialized loggers may not switch immediately.',
+      'Docker, desktop, and source deployments can have different writable paths.',
+    ],
+  },
+  'settings.system.WEBUI_ENABLED': {
+    title: 'Default WebUI Startup',
+    summary: 'Controls whether startup defaults to WebUI/API service mode.',
+    usage: 'This is a startup-time compatibility flag. Saving it does not immediately start or stop the current WebUI process.',
+    valueNotes: [
+      'true makes later default entrypoint starts prefer WebUI/API service mode.',
+      'false keeps the non-WebUI default startup behavior; explicit CLI arguments can still override it.',
+    ],
+    impact: ['Affects the default mode on the next main.py or service-entry startup.'],
+    notes: [
+      'Restart the relevant process before the change takes effect.',
+      'Do not treat this switch as an immediate on/off control for the current settings page.',
+    ],
+  },
+  'settings.system.WEBUI_AUTO_BUILD': {
+    title: 'Auto-build Web Frontend',
+    summary: 'Controls whether backend WebUI startup automatically checks and builds frontend static assets.',
+    usage: 'Keep true for source deployments. Set false for prebuilt images, offline environments, or restricted runtimes.',
+    valueNotes: [
+      'true makes startup prepare apps/dsa-web static assets.',
+      'false only verifies existing build artifacts; if assets are missing, WebUI may be unavailable or only backend warnings will be logged.',
+    ],
+    impact: ['Affects frontend asset preparation on the next WebUI backend startup.'],
+    notes: [
+      'Saving does not trigger a build immediately; restart the backend process.',
+      'Before disabling it in Docker or packages, make sure the built assets are already included.',
+    ],
+  },
   'settings.system.ADMIN_AUTH_ENABLED': {
     title: 'Web Login Protection',
     summary: 'Enables admin password protection for WebUI.',
@@ -1222,7 +1504,7 @@ const settingsHelpEnUS: SettingsHelpMap = {
     summary: 'Controls whether analysis is skipped on non-trading days.',
     usage: 'Default true. Set false or use --force-run to override.',
     valueNotes: ['Uses market calendars for A-share, HK, US, and other supported markets.'],
-    impact: ['Affects whether manual and scheduled runs execute on holidays.'],
+    impact: ['Affects scheduled jobs, CLI runs, and GitHub Actions manual runs on holidays; the Web/API market-review button submits directly.'],
     notes: ['Disabling it can produce reports with missing realtime quotes on closed markets.'],
   },
   'settings.system.HTTP_PROXY': {
@@ -1684,6 +1966,18 @@ const settingsHelpEnUS: SettingsHelpMap = {
     impact: ['Affects total analysis time.'],
     notes: ['Total time ≈ stock count × per-stock time + (count-1) × ANALYSIS_DELAY.'],
   },
+  'settings.system.SAVE_CONTEXT_SNAPSHOT': {
+    title: 'Save Context Snapshot',
+    summary: 'Controls whether the full analysis history context_snapshot is persisted to the database.',
+    usage: 'Enabled by default. When disabled, new history records do not persist enhanced_context, market_phase_summary, AnalysisContextPack overview, diagnostic snapshots, or other context_snapshot content.',
+    valueNotes: [
+      'When disabled, history detail, completed task status, and Web report pages cannot read low-sensitivity input-block summaries from persisted records.',
+      'This switch does not disable AnalysisContextPack construction for the current run and does not remove the low-sensitivity pack summary from LLM prompts.',
+      'The CLI --no-context-snapshot flag has the same persistence effect as setting this to false.',
+    ],
+    impact: ['Affects historical transparency, diagnostics that rely on context snapshots, and Web report data-source summaries.'],
+    notes: ['To disable the P3-P5 pack integration itself, roll back the related code; there is no runtime pack master switch.'],
+  },
   'settings.system.market_review': {
     title: 'Market Review',
     summary: 'Controls the market review feature: on/off, coverage region, and color scheme.',
@@ -1720,7 +2014,7 @@ export function getSettingsHelpContent(
 
   if (fallbackDescription) {
     return {
-      title: '配置说明',
+      title: locale?.toLowerCase().startsWith('en') ? 'Configuration help' : '配置说明',
       summary: fallbackDescription,
     };
   }

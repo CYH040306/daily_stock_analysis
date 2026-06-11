@@ -2,8 +2,12 @@
  * Backtest API type definitions
  * Mirrors api/v1/schemas/backtest.py
  */
+import type { DecisionAction, MarketPhaseSummary } from './analysis';
 
 // ============ Request / Response ============
+
+export type BacktestAnalysisPhase = 'premarket' | 'intraday' | 'postmarket' | 'unknown';
+export type BacktestPhaseFilter = BacktestAnalysisPhase | 'all';
 
 export interface BacktestRunRequest {
   code?: string;
@@ -33,7 +37,11 @@ export interface BacktestResultItem {
   evalStatus: string;
   evaluatedAt?: string;
   operationAdvice?: string;
+  action?: DecisionAction | null;
+  actionLabel?: string | null;
   trendPrediction?: string;
+  marketPhase?: string | null;
+  marketPhaseSummary?: MarketPhaseSummary | null;
   positionRecommendation?: string;
   startPrice?: number;
   endClose?: number;

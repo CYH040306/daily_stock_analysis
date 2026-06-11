@@ -78,6 +78,57 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertIn("核心结论", out)
         self.assertIn("作战计划", out)
+        self.assertNotIn("盘中决策护栏", out)
+
+    def test_render_markdown_phase_decision_section(self) -> None:
+        """Markdown renders phase_decision when present."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "等待确认"},
+                "intelligence": {"risk_alerts": []},
+                "phase_decision": {
+                    "action_window": "盘中跟踪",
+                    "immediate_action": "等待确认",
+                    "watch_conditions": ["放量突破"],
+                    "next_check_time": "14:30",
+                    "confidence_reason": "数据质量可用",
+                    "data_limitations": ["quote: stale"],
+                },
+                "battle_plan": {"sniper_points": {"stop_loss": "110"}},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("盘中决策护栏", out)
+        self.assertIn("盘中跟踪", out)
+        self.assertIn("放量突破", out)
+        self.assertIn("quote: stale", out)
+
+    def test_render_markdown_skips_context_only_phase_decision_shape(self) -> None:
+        """Markdown skips mechanically shaped phase_decision without actionable content."""
+        r = _make_result(
+            dashboard={
+                "core_conclusion": {"one_sentence": "持有观望"},
+                "intelligence": {"risk_alerts": []},
+                "phase_decision": {
+                    "phase_context": {"phase": "intraday", "market": "cn"},
+                    "action_window": None,
+                    "immediate_action": None,
+                    "watch_conditions": [],
+                    "next_check_time": None,
+                    "confidence_reason": None,
+                    "data_limitations": [],
+                },
+                "battle_plan": {"sniper_points": {"stop_loss": "110"}},
+            }
+        )
+
+        out = render("markdown", [r], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertNotIn("盘中决策护栏", out)
 
     def test_render_wechat(self) -> None:
         """Wechat platform renders."""
@@ -107,6 +158,63 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("分析模型: gemini/gemini-2.5-flash", visible)
         self.assertNotIn("分析模型", hidden)
         self.assertNotIn("gemini/gemini-2.5-flash", hidden)
+
+    def test_render_templates_show_compact_market_status_only(self) -> None:
+        r = _make_result()
+        r.market_phase_summary = {
+            "phase": "intraday",
+            "market": "cn",
+            "trigger_source": "api",
+            "is_partial_bar": True,
+        }
+        r.analysis_context_pack_overview = {
+            "data_quality": {
+                "level": "limited",
+                "limitations": ["quote: stale", "news: missing", "technical: fallback"],
+            }
+        }
+        r.raw_response = "raw context pack should not appear"
+
+        out = render("brief", [r])
+
+        self.assertIsNotNone(out)
+        self.assertIn("市场状态：A股 · 盘中", out)
+        self.assertNotIn("阶段：intraday", out)
+        self.assertNotIn("盘中数据提示", out)
+        self.assertNotIn("数据质量: limited", out)
+        self.assertNotIn("限制: quote: stale", out)
+        self.assertNotIn("限制: news: missing", out)
+        self.assertNotIn("technical: fallback", out)
+        self.assertNotIn("raw context pack", out)
+
+    def test_render_templates_skip_phase_pack_excerpt_when_summary_missing(self) -> None:
+        r = _make_result()
+
+        out = render("brief", [r])
+
+        self.assertIsNotNone(out)
+        self.assertNotIn("摘要来源", out)
+        self.assertNotIn("evaluator snapshot", out)
+
+    def test_render_market_status_preserves_input_order(self) -> None:
+        cn = _make_result(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=60,
+        )
+        cn.market_phase_summary = {"market": "cn", "phase": "postmarket"}
+        us = _make_result(
+            code="AAPL",
+            name="Apple",
+            sentiment_score=90,
+        )
+        us.market_phase_summary = {"market": "us", "phase": "premarket"}
+
+        out = render("markdown", [cn, us], summary_only=True)
+
+        self.assertIsNotNone(out)
+        self.assertIn("市场状态：A股 · 盘后", out)
+        self.assertNotIn("市场状态：美股 · 盘前", out)
 
     def test_render_markdown_footer_uses_consistent_separator(self) -> None:
         r = _make_result(model_used="gemini/gemini-2.5-flash")

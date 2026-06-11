@@ -19,6 +19,15 @@
 - 英文文案保留同样结构，便于后续扩展语言切换。
 - 文案应解释用途、取值说明、影响范围、注意事项和相关文档，不应复制完整专题文档。
 
+## WebUI 语言说明（非配置项）
+
+本项目新增独立的 WebUI 界面语言能力（`zh` / `en`），用于静态页面文案、导航与通用控件文案。该状态与 `REPORT_LANGUAGE` 解耦，不改写报告语言语义。
+
+- 状态键：`dsa.uiLanguage`（`localStorage`，浏览器端持久化）。
+- 初始化优先级：`localStorage` 有效值优先，其次识别浏览器语言（`zh-*` / `en-*`），最后回退 `zh`。
+- 该语言开关不属于 `.env` 配置字段，不在 `system/config` 的可配置字段清单中体现。
+- 界面切换会同步 `document.documentElement.lang`（`zh-CN` 或 `en`）以利于可访问性与无障碍语义。
+
 ## 覆盖范围
 
 PR1 覆盖基础设施与首批代表性配置项：
@@ -48,7 +57,11 @@ PR3 registered-field slice / 阶段性补齐：聚焦 Web 设置页中实际展�
 - 数据源与搜索：TickFlow、SerpAPI、Brave、Bocha、MiniMax、SearXNG 公共实例、BIAS 阈值和 Pytdx 服务器字段。
 - 通知高级字段：飞书高级安全/应用字段、Telegram topic、Discord/Slack 高级字段、Pushover、ntfy、Gotify、PushPlus、ServerChan3、AstrBot 和自定义 Webhook 高级模板/鉴权字段。
 
-后续 PR 可继续覆盖 Web 设置页新增展示的字段或独立操作区；未在设置页展示的 `.env` 变量（如 DATABASE_PATH、SQLITE_*、MARKDOWN_TO_IMAGE_*、USE_PROXY、PROXY_HOST、PROXY_PORT、LOG_DIR、LITELLM_LOG_LEVEL 等）暂不属于本 PR3 切片范围。
+Issue #1512 收口后，Web 设置页只展示后端配置注册表中的正式字段。未注册的 `.env` key 不再作为普通可编辑设置项展示，避免 raw key、`Auto-inferred field metadata.` 和无 help 按钮的配置项进入中文界面；这些 key 仍可通过 `.env` 文件或导入/导出能力保留和维护。
+
+例外：`LLM_CHANNELS` 声明的动态渠道详情键（如 `LLM_DEEPSEEK_API_KEY`、`LLM_MY_PROXY_MODELS`）会保留在配置接口返回中，供“AI 模型接入”编辑器读取和保存；它们不作为普通配置卡片展示，也不复用 `WEB_SETTINGS_HIDDEN_FROM_UI` 的运维隐藏语义。
+
+暂不纳入 Web 设置页展示的低频/运维类 `.env` 变量包括 `DATABASE_PATH`、`SQLITE_*`、`USE_PROXY`、`PROXY_HOST`、`PROXY_PORT` 等。若后续需要在 Web 中编辑这些字段，应先在 `src/core/config_registry.py` 中正式注册并补齐 help 元数据，而不是依赖自动推断。
 
 ### 覆盖边界
 

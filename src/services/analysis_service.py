@@ -11,6 +11,7 @@
 """
 
 import logging
+import copy
 import uuid
 from typing import Optional, Dict, Any, Callable, List
 
@@ -22,6 +23,8 @@ from src.report_language import (
     localize_trend_prediction,
     normalize_report_language,
 )
+from src.market_phase_summary import extract_market_phase_summary
+from src.schemas.decision_action import build_action_fields
 from src.services.run_diagnostics import (
     activate_run_diagnostic_context,
     build_run_diagnostic_summary,
@@ -54,6 +57,10 @@ class AnalysisService:
         send_notification: bool = True,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         skills: Optional[List[str]] = None,
+        analysis_phase: str = "auto",
+        query_source: str = "api",
+        portfolio_context: Optional[Dict[str, Any]] = None,
+        report_language: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -64,6 +71,7 @@ class AnalysisService:
             force_refresh: 是否强制刷新
             query_id: 查询 ID（可选）
             send_notification: 是否发送通知（API 触发默认发送）
+            analysis_phase: 请求的分析阶段覆盖（auto/premarket/intraday/postmarket）
             
         Returns:
             分析结果字典，包含:
@@ -88,20 +96,26 @@ class AnalysisService:
                     trace_id=effective_trace_id,
                     query_id=query_id,
                     stock_code=stock_code,
-                    trigger_source="api",
+                    trigger_source=query_source or "api",
                 )
             
             # 获取配置
             config = get_config()
+            normalized_report_language = normalize_report_language(report_language, default="")
+            if normalized_report_language:
+                config = copy.copy(config)
+                config.report_language = normalized_report_language
             
             # 创建分析流水线
             pipeline = StockAnalysisPipeline(
                 config=config,
                 query_id=query_id,
                 trace_id=effective_trace_id,
-                query_source="api",
+                query_source=query_source or "api",
                 progress_callback=progress_callback,
                 analysis_skills=skills,
+                analysis_phase=analysis_phase,
+                portfolio_context=portfolio_context,
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)
@@ -161,10 +175,17 @@ class AnalysisService:
         report_language = normalize_report_language(getattr(result, "report_language", "zh"))
         sentiment_label = get_sentiment_label(result.sentiment_score, report_language)
         stock_name = get_localized_stock_name(getattr(result, "name", None), result.code, report_language)
+        action_fields = build_action_fields(
+            operation_advice=getattr(result, "operation_advice", None),
+            explicit_action=getattr(result, "action", None),
+            report_type=report_type,
+            report_language=report_language,
+        )
         diagnostic_context = get_current_diagnostic_context()
         trace_id = diagnostic_context.trace_id if diagnostic_context is not None else query_id
         diagnostic_snapshot = diagnostic_context.snapshot() if diagnostic_context is not None else None
         diagnostic_context_snapshot = getattr(result, "diagnostic_context_snapshot", None)
+        market_phase_summary = extract_market_phase_summary(diagnostic_context_snapshot)
         if isinstance(diagnostic_context_snapshot, dict):
             context_snapshot = dict(diagnostic_context_snapshot)
             if diagnostic_snapshot is not None:
@@ -193,10 +214,13 @@ class AnalysisService:
                 "current_price": result.current_price,
                 "change_pct": result.change_pct,
                 "model_used": getattr(result, "model_used", None),
+                "market_phase_summary": market_phase_summary,
             },
             "summary": {
                 "analysis_summary": result.analysis_summary,
                 "operation_advice": localize_operation_advice(result.operation_advice, report_language),
+                "action": action_fields["action"],
+                "action_label": action_fields["action_label"],
                 "trend_prediction": localize_trend_prediction(result.trend_prediction, report_language),
                 "sentiment_score": result.sentiment_score,
                 "sentiment_label": sentiment_label,

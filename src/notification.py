@@ -25,10 +25,12 @@ from enum import Enum
 
 from src.config import Config, get_config
 from src.enums import ReportType
+from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
 from src.notification_routing import (
     get_notification_route_config,
     split_notification_route_channels,
 )
+from src.notification_contracts import is_feishu_static_configured
 from src.notification_noise import (
     NotificationNoiseDecision,
     evaluate_notification_noise,
@@ -238,8 +240,10 @@ class NotificationService(
 
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
-        if self._has_context_channel():
+        if self._extract_dingtalk_session_webhook() is not None:
             self._context_channels.append("钉钉会话")
+        if self._extract_feishu_reply_info() is not None:
+            self._context_channels.append("飞书会话")
 
         if not self._available_channels and not self._context_channels:
             logger.warning("未配置有效的通知渠道，将不发送推送通知")
@@ -334,6 +338,36 @@ class NotificationService(
                 models.append(model)
         return list(dict.fromkeys(models))
 
+    def _public_phase_pack_excerpt(self, result: AnalysisResult, report_language: str) -> str:
+        return format_public_phase_pack_excerpt(
+            getattr(result, "market_phase_summary", None),
+            getattr(result, "analysis_context_pack_overview", None),
+            source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
+            report_language=report_language,
+        )
+
+    def _public_market_status_line(self, results: List[AnalysisResult], report_language: str) -> str:
+        for result in results or []:
+            line = format_public_market_status_line(
+                getattr(result, "market_phase_summary", None),
+                report_language=report_language,
+            )
+            if line:
+                return line
+        return ""
+
+    def _append_market_status_line(
+        self,
+        lines: List[str],
+        results: List[AnalysisResult],
+        report_language: str,
+    ) -> None:
+        status_line = self._public_market_status_line(results, report_language)
+        if status_line:
+            lines.extend([status_line, ""])
+        elif lines and lines[-1] != "":
+            lines.append("")
+
     def _should_show_llm_model(self) -> bool:
         return bool(getattr(self._config, "report_show_llm_model", self._report_show_llm_model))
     
@@ -351,7 +385,7 @@ class NotificationService(
         if getattr(config, "wechat_webhook_url", None):
             channels.append(NotificationChannel.WECHAT)
 
-        if getattr(config, "feishu_webhook_url", None):
+        if is_feishu_static_configured(config):
             channels.append(NotificationChannel.FEISHU)
 
         if (
@@ -504,7 +538,39 @@ class NotificationService(
         return (
             self._extract_dingtalk_session_webhook() is not None
             or self._extract_feishu_reply_info() is not None
+            or self._extract_telegram_context_chat_id() is not None
         )
+
+    def _source_platform(self) -> str:
+        """Return normalized platform from the source bot message."""
+        platform = getattr(self._source_message, "platform", "")
+        if hasattr(platform, "value"):
+            platform = platform.value
+        return str(platform or "").lower()
+
+    def _extract_telegram_context_chat_id(self) -> Optional[str]:
+        """从来源消息中提取 Telegram 上下文 chat_id（用于异步回复）。"""
+        if not isinstance(self._source_message, BotMessage):
+            return None
+        if self._source_platform() != "telegram":
+            return None
+        raw_data = getattr(self._source_message, "raw_data", {}) or {}
+        for candidate in (
+            getattr(self._source_message, "chat_id", ""),
+            raw_data.get("chat_id"),
+            raw_data.get("message", {}).get("chat", {}).get("id") if isinstance(raw_data.get("message"), dict) else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+            if candidate is not None and not isinstance(candidate, str):
+                candidate_text = str(candidate).strip()
+                if candidate_text:
+                    return candidate_text
+        return None
+
+    def should_broadcast_static_channels(self) -> bool:
+        """Whether static notification channels should receive this dispatch."""
+        return not self._has_context_channel()
 
     def _extract_dingtalk_session_webhook(self) -> Optional[str]:
         """从来源消息中提取钉钉会话 Webhook（用于 Stream 模式回复）"""
@@ -579,6 +645,18 @@ class NotificationService(
                     logger.error("飞书会话（Stream）推送失败")
             except Exception as e:
                 logger.error(f"飞书会话（Stream）推送异常: {e}")
+
+        # 尝试 Telegram 会话上下文（按来源 chat_id 回执）
+        telegram_chat_id = self._extract_telegram_context_chat_id()
+        if telegram_chat_id:
+            try:
+                if self.send_to_telegram(content, chat_id=telegram_chat_id):
+                    logger.info("已通过 Telegram 上下文会话推送报告")
+                    success = True
+                else:
+                    logger.error("Telegram 上下文会话推送失败")
+            except Exception as e:
+                logger.error(f"Telegram 上下文会话推送异常: {e}")
 
         return success
 
@@ -723,10 +801,9 @@ class NotificationService(
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
             f"{labels['generated_at_label']}：{datetime.now().strftime('%H:%M:%S')}",
-            "",
-            "---",
-            "",
         ]
+        self._append_market_status_line(report_lines, results, report_language)
+        report_lines.extend(["---", ""])
         
         # 按评分排序（高分在前）
         sorted_results = sorted(
@@ -782,7 +859,6 @@ class NotificationService(
                     f"**Confidence：{confidence_stars}**",
                     "",
                 ])
-
                 self._append_market_snapshot(report_lines, result)
                 
                 # 核心看点
@@ -998,8 +1074,8 @@ class NotificationService(
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
-            "",
         ]
+        self._append_market_status_line(report_lines, results, report_language)
 
         # === 新增：分析结果摘要 (Issue #112) ===
         if results:
@@ -1302,8 +1378,8 @@ class NotificationService(
             "",
             f"> {len(results)} {labels['stock_unit']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         
         # Issue #262: summary_only 时仅输出摘要列表
         if self._report_summary_only:
@@ -1454,8 +1530,8 @@ class NotificationService(
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit_compact']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count} | "
             f"{labels['avg_score_label']}:{avg_score:.0f}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         
         # 每只股票精简信息（控制长度）
         for result in sorted_results:
@@ -1542,8 +1618,8 @@ class NotificationService(
             f"# {report_date} {labels['brief_title']}",
             "",
             f"> {len(results)} {labels['stock_unit_compact']} | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         for r in sorted_results:
             _, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)
@@ -1592,6 +1668,10 @@ class NotificationService(
             f"> {report_date} | {labels['score_label']}: **{result.sentiment_score}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
             "",
         ]
+
+        excerpt = self._public_phase_pack_excerpt(result, report_language)
+        if excerpt:
+            lines.extend([excerpt, ""])
 
         self._append_market_snapshot(lines, result)
         
@@ -1989,6 +2069,10 @@ class NotificationService(
                 change = "--" if change_pct is None else f"{change_pct:+.2f}%"
                 lines.append(f"| {name} | {board_type} | {status} | {change} |")
         else:
+            if all(board_type == "N/A" for _, board_type, _, _ in prepared):
+                lines.append(" / ".join(name for name, _, _, _ in prepared))
+                lines.append("")
+                return
             lines.append(f"| {labels['board_name_label']} | {labels['board_type_label']} |")
             lines.append("|:-----|:----:|")
             for name, board_type, _, _ in prepared:
@@ -2107,6 +2191,30 @@ class NotificationService(
             Structured dispatch diagnostics.
         """
         context_success = self.send_to_context(content)
+        if not self.should_broadcast_static_channels():
+            if context_success:
+                logger.info("已通过上下文会话完成推送，跳过静态通知渠道")
+                return NotificationDispatchResult(
+                    dispatched=True,
+                    success=True,
+                    status="sent",
+                    channel_results=[ChannelAttemptResult(channel="__context__", success=True)],
+                )
+            logger.warning("交互式上下文推送失败，已跳过静态通知渠道")
+            return NotificationDispatchResult(
+                dispatched=True,
+                success=False,
+                status="all_failed",
+                channel_results=[
+                    ChannelAttemptResult(
+                        channel="__context__",
+                        success=False,
+                        error_code="send_failed",
+                        retryable=True,
+                    )
+                ],
+                message="interactive context delivery failed; static channels skipped",
+            )
 
         if not self._available_channels:
             if context_success:

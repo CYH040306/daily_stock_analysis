@@ -18,6 +18,15 @@ from src.storage import BacktestResult, BacktestSummary, DatabaseManager, Analys
 logger = logging.getLogger(__name__)
 
 MARKET_REVIEW_REPORT_TYPE = "market_review"
+BacktestResultContextRow = Tuple[
+    BacktestResult,
+    Optional[str],
+    Optional[str],
+    Optional[datetime],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]
 
 
 class BacktestRepository:
@@ -111,7 +120,7 @@ class BacktestRepository:
         days: Optional[int],
         offset: int,
         limit: int,
-    ) -> Tuple[List[Tuple[BacktestResult, Optional[str], Optional[str], Optional[datetime]]], int]:
+    ) -> Tuple[List[BacktestResultContextRow], int]:
         with self.db.get_session() as session:
             conditions = self._build_result_conditions(
                 code=code,
@@ -136,6 +145,9 @@ class BacktestRepository:
                     AnalysisHistory.name,
                     AnalysisHistory.trend_prediction,
                     AnalysisHistory.created_at,
+                    AnalysisHistory.context_snapshot,
+                    AnalysisHistory.raw_result,
+                    AnalysisHistory.report_type,
                 )
                 .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
                 .where(where_clause)
@@ -144,6 +156,78 @@ class BacktestRepository:
                 .limit(limit)
             ).all()
             return list(rows), int(total)
+
+    def get_results_with_context_batch(
+        self,
+        *,
+        code: Optional[str],
+        eval_window_days: Optional[int] = None,
+        engine_version: Optional[str] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+        days: Optional[int],
+        offset: int,
+        limit: int,
+    ) -> List[BacktestResultContextRow]:
+        """Return result rows plus AnalysisHistory.context_snapshot for dynamic filtering."""
+        with self.db.get_session() as session:
+            conditions = self._build_result_conditions(
+                code=code,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+                days=days,
+            )
+            where_clause = and_(*conditions) if conditions else True
+            rows = session.execute(
+                select(
+                    BacktestResult,
+                    AnalysisHistory.name,
+                    AnalysisHistory.trend_prediction,
+                    AnalysisHistory.created_at,
+                    AnalysisHistory.context_snapshot,
+                    AnalysisHistory.raw_result,
+                    AnalysisHistory.report_type,
+                )
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                .where(where_clause)
+                .order_by(desc(BacktestResult.analysis_date), desc(BacktestResult.evaluated_at))
+                .offset(offset)
+                .limit(limit)
+            ).all()
+            return list(rows)
+
+    def list_results_with_context(
+        self,
+        *,
+        code: Optional[str],
+        eval_window_days: Optional[int] = None,
+        engine_version: Optional[str] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+        days: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> List[Tuple[BacktestResult, Optional[str]]]:
+        with self.db.get_session() as session:
+            conditions = self._build_result_conditions(
+                code=code,
+                eval_window_days=eval_window_days,
+                engine_version=engine_version,
+                analysis_date_from=analysis_date_from,
+                analysis_date_to=analysis_date_to,
+                days=days,
+            )
+            where_clause = and_(*conditions) if conditions else True
+            query = (
+                select(BacktestResult, AnalysisHistory.context_snapshot)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                .where(where_clause)
+                .order_by(desc(BacktestResult.analysis_date), desc(BacktestResult.evaluated_at))
+            )
+            if limit is not None:
+                query = query.limit(limit)
+            return list(session.execute(query).all())
 
     def count_results(
         self,

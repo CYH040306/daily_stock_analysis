@@ -27,6 +27,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    git \
     gosu \
     wkhtmltopdf \
     fontconfig \
@@ -54,6 +55,9 @@ COPY src/ ./src/
 COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Verify the bundled AlphaSift adapter from requirements.
+RUN python -c "import alphasift.dsa_adapter"
 
 # 确保数据目录存在并授权给 non-root 用户
 RUN mkdir -p /app/data /app/logs /app/reports && \

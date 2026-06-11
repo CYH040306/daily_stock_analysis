@@ -32,12 +32,11 @@ from src.analyzer import (
     AnalysisResult,
     fill_price_position_if_needed,
     normalize_chip_structure_availability,
+    populate_decision_action_fields,
     stabilize_decision_with_structure,
 )
-from src.data.stock_mapping import STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.report_language import (
-    get_unknown_text,
     infer_decision_type_from_advice,
     localize_confidence_level,
     localize_operation_advice,
@@ -46,6 +45,9 @@ from src.report_language import (
 )
 from src.search_service import SearchService
 from src.analysis_context_pack_prompt import format_analysis_context_pack_prompt_section
+from src.analysis_context_pack_overview import render_analysis_context_pack_overview
+from src.market_phase_summary import MARKET_PHASE_SUMMARY_KEY, render_market_phase_summary
+from src.phase_decision_guardrail import apply_phase_decision_guardrails
 from src.services.social_sentiment_service import SocialSentimentService
 from src.services.analysis_context_builder import (
     AnalysisContextBuilder,
@@ -102,6 +104,8 @@ class StockAnalysisPipeline:
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
         analysis_skills: Optional[List[str]] = None,
+        analysis_phase: str = "auto",
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化调度器
@@ -121,6 +125,8 @@ class StockAnalysisPipeline:
         )
         self.progress_callback = progress_callback
         self.analysis_skills = list(analysis_skills) if analysis_skills is not None else None
+        self.analysis_phase = analysis_phase or "auto"
+        self.portfolio_context = dict(portfolio_context) if isinstance(portfolio_context, dict) else None
         
         # 初始化各模块
         self.db = get_db()
@@ -290,14 +296,18 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
+            portfolio_context = getattr(self, "portfolio_context", None)
+            if not isinstance(portfolio_context, dict):
+                portfolio_context = None
             market = get_market_for_stock(normalize_stock_code(code))
             market_phase_context = build_market_phase_context(
                 market=market,
                 current_time=current_time,
                 trigger_source=self.query_source,
-                analysis_intent="auto",
+                analysis_phase=getattr(self, "analysis_phase", "auto"),
             )
             market_phase_context_dict = market_phase_context.to_dict()
+            market_phase_summary = render_market_phase_summary(market_phase_context_dict)
 
             self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
             # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
@@ -427,6 +437,8 @@ class StockAnalysisPipeline:
                     fundamental_context,
                     trend_result,
                     market_phase_context=market_phase_context_dict,
+                    market_phase_summary=market_phase_summary,
+                    portfolio_context=portfolio_context,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
@@ -510,12 +522,19 @@ class StockAnalysisPipeline:
                 trend_result,
                 stock_name,  # 传入股票名称
                 fundamental_context,
+                market_phase_context=market_phase_context_dict,
+                portfolio_context=portfolio_context,
             )
             enhanced_context["market_phase_context"] = market_phase_context_dict
+            if portfolio_context is not None:
+                enhanced_context["portfolio_context"] = dict(portfolio_context)
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
-            analysis_context_pack_summary = self._build_analysis_context_pack_summary(
+            (
+                analysis_context_pack_summary,
+                analysis_context_pack_overview,
+            ) = self._build_analysis_context_pack_outputs(
                 self._build_legacy_analysis_artifacts(
                     code=code,
                     stock_name=stock_name,
@@ -530,6 +549,7 @@ class StockAnalysisPipeline:
                     news_context=news_context,
                     news_result_count=news_result_count,
                     query_id=query_id,
+                    portfolio_context=portfolio_context,
                 ),
                 report_language=report_language,
                 code=code,
@@ -600,9 +620,26 @@ class StockAnalysisPipeline:
             # Step 7.7: price_position fallback
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                adjustments = apply_phase_decision_guardrails(
+                    result,
+                    market_phase_summary=market_phase_summary,
+                    analysis_context_pack_overview=analysis_context_pack_overview,
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if adjustments:
+                    logger.info("[phase_decision_guardrail] Applied adjustments for %s: %s", code, adjustments)
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
+                result.market_phase_summary = market_phase_summary
+                result.analysis_context_pack_overview = analysis_context_pack_overview
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=action_source_advice,
+                )
 
             # Step 8: 保存分析历史记录
             if result and result.success:
@@ -613,7 +650,9 @@ class StockAnalysisPipeline:
                         news_content=news_context,
                         news_result_count=news_result_count,
                         realtime_quote=realtime_quote,
-                        chip_data=chip_data
+                        chip_data=chip_data,
+                        analysis_context_pack_overview=analysis_context_pack_overview,
+                        market_phase_summary=market_phase_summary,
                     )
                     result.diagnostic_context_snapshot = context_snapshot
                     saved_count = self.db.save_analysis_history(
@@ -650,7 +689,9 @@ class StockAnalysisPipeline:
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
         stock_name: str = "",
-        fundamental_context: Optional[Dict[str, Any]] = None
+        fundamental_context: Optional[Dict[str, Any]] = None,
+        market_phase_context: Optional[Dict[str, Any]] = None,
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         增强分析上下文
@@ -663,6 +704,7 @@ class StockAnalysisPipeline:
             chip_data: 筹码分布数据
             trend_result: 趋势分析结果
             stock_name: 股票名称
+            market_phase_context: 已构建的市场阶段上下文，用于标记盘中 partial bar
             
         Returns:
             增强后的上下文
@@ -675,6 +717,8 @@ class StockAnalysisPipeline:
             enhanced['stock_name'] = stock_name
         elif realtime_quote and getattr(realtime_quote, 'name', None):
             enhanced['stock_name'] = realtime_quote.name
+        if isinstance(portfolio_context, dict):
+            enhanced["portfolio_context"] = dict(portfolio_context)
 
         # 将运行时搜索窗口透传给 analyzer，避免与全局配置重新读取产生窗口不一致
         enhanced['news_window_days'] = getattr(self.search_service, "news_window_days", 3)
@@ -683,6 +727,9 @@ class StockAnalysisPipeline:
         if realtime_quote:
             # 使用 getattr 安全获取字段，缺失字段返回 None 或默认值
             volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
+            quote_source = getattr(realtime_quote, 'source', None)
+            quote_source_name = getattr(quote_source, 'value', quote_source)
+            quote_source_name = str(quote_source_name) if quote_source_name is not None else None
             enhanced['realtime'] = {
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
@@ -695,7 +742,12 @@ class StockAnalysisPipeline:
                 'total_mv': getattr(realtime_quote, 'total_mv', None),
                 'circ_mv': getattr(realtime_quote, 'circ_mv', None),
                 'change_60d': getattr(realtime_quote, 'change_60d', None),
-                'source': getattr(realtime_quote, 'source', None),
+                'source': quote_source_name,
+                'fetched_at': getattr(realtime_quote, 'fetched_at', None),
+                'provider_timestamp': getattr(realtime_quote, 'provider_timestamp', None),
+                'is_stale': getattr(realtime_quote, 'is_stale', None),
+                'stale_seconds': getattr(realtime_quote, 'stale_seconds', None),
+                'fallback_from': getattr(realtime_quote, 'fallback_from', None),
             }
             # 移除 None 值以减少上下文大小
             enhanced['realtime'] = {k: v for k, v in enhanced['realtime'].items() if v is not None}
@@ -750,6 +802,9 @@ class StockAnalysisPipeline:
                 vol = getattr(realtime_quote, 'volume', None)
                 amt = getattr(realtime_quote, 'amount', None)
                 pct = getattr(realtime_quote, 'change_pct', None)
+                fetched_at = getattr(realtime_quote, 'fetched_at', None)
+                provider_timestamp = getattr(realtime_quote, 'provider_timestamp', None)
+                fallback_from = getattr(realtime_quote, 'fallback_from', None)
                 realtime_today = {
                     'close': price,
                     'open': open_p,
@@ -761,18 +816,38 @@ class StockAnalysisPipeline:
                     'date': market_today,
                     'data_source': f"realtime:{source_name}",
                     'realtime_source': source_name,
+                    'is_estimated': True,
                 }
+                estimated_fields = [
+                    'close', 'open', 'high', 'low', 'ma5', 'ma10', 'ma20',
+                ]
                 if vol is not None:
                     realtime_today['volume'] = vol
+                    estimated_fields.append('volume')
                 if amt is not None:
                     realtime_today['amount'] = amt
+                    estimated_fields.append('amount')
                 if pct is not None:
                     realtime_today['pct_chg'] = pct
+                    estimated_fields.append('pct_chg')
+                realtime_today['estimated_fields'] = estimated_fields
+                if isinstance(market_phase_context, dict) and "is_partial_bar" in market_phase_context:
+                    realtime_today['is_partial_bar'] = market_phase_context.get("is_partial_bar")
+                if fetched_at is not None:
+                    realtime_today['fetched_at'] = fetched_at
+                if provider_timestamp is not None:
+                    realtime_today['provider_timestamp'] = provider_timestamp
+                if fallback_from is not None:
+                    realtime_today['fallback_from'] = fallback_from
                 realtime_owned_fields = {
                     'open', 'high', 'low', 'close',
                     'volume', 'amount', 'pct_chg', 'pctChg',
                     'date', 'data_source', 'dataSource', 'source',
                     'realtime_source', 'realtimeSource',
+                    'is_partial_bar', 'isPartialBar', 'is_estimated',
+                    'isEstimated', 'estimated_fields', 'estimatedFields',
+                    'fetched_at', 'fetchedAt', 'provider_timestamp',
+                    'providerTimestamp', 'fallback_from', 'fallbackFrom',
                 }
                 for k, v in orig_today.items():
                     if k not in realtime_today and k not in realtime_owned_fields and v is not None:
@@ -909,6 +984,8 @@ class StockAnalysisPipeline:
         trend_result: Optional[TrendAnalysisResult] = None,
         *,
         market_phase_context: Optional[Dict[str, Any]] = None,
+        market_phase_summary: Optional[Dict[str, Any]] = None,
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -933,6 +1010,8 @@ class StockAnalysisPipeline:
                 "report_language": report_language,
                 "fundamental_context": fundamental_context,
             }
+            if isinstance(portfolio_context, dict):
+                initial_context["portfolio_context"] = dict(portfolio_context)
             if self.analysis_skills is not None:
                 initial_context["skills"] = self.analysis_skills
             if market_phase_context is not None:
@@ -964,8 +1043,12 @@ class StockAnalysisPipeline:
             # Issue #1066: ensure deep history is in DB before agent tools run
             self._ensure_agent_history(code)
 
+            analysis_context = self._load_agent_analysis_context(code, stock_name)
             market = get_market_for_stock(normalize_stock_code(code))
-            analysis_context_pack_summary = self._build_analysis_context_pack_summary(
+            (
+                analysis_context_pack_summary,
+                analysis_context_pack_overview,
+            ) = self._build_analysis_context_pack_outputs(
                 self._build_agent_analysis_artifacts(
                     code=code,
                     stock_name=stock_name,
@@ -974,6 +1057,8 @@ class StockAnalysisPipeline:
                     initial_context=initial_context,
                     fundamental_context=fundamental_context,
                     query_id=query_id,
+                    base_context=analysis_context,
+                    portfolio_context=portfolio_context,
                 ),
                 report_language=report_language,
                 code=code,
@@ -1032,7 +1117,10 @@ class StockAnalysisPipeline:
             if result and getattr(self.config, "report_integrity_enabled", False):
                 from src.analyzer import check_content_integrity, apply_placeholder_fill
 
-                pass_integrity, missing = check_content_integrity(result)
+                pass_integrity, missing = check_content_integrity(
+                    result,
+                    require_phase_decision=isinstance(market_phase_summary, dict),
+                )
                 if not pass_integrity:
                     apply_placeholder_fill(result, missing)
                     logger.info(
@@ -1050,9 +1138,26 @@ class StockAnalysisPipeline:
                 if isinstance(realtime_data, dict):
                     result.current_price = realtime_data.get("price")
                     result.change_pct = realtime_data.get("change_pct")
+                action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
+                adjustments = apply_phase_decision_guardrails(
+                    result,
+                    market_phase_summary=market_phase_summary,
+                    analysis_context_pack_overview=analysis_context_pack_overview,
+                    report_language=getattr(result, "report_language", None)
+                    or getattr(self.config, "report_language", "zh"),
+                )
+                if adjustments:
+                    logger.info("[phase_decision_guardrail] Applied agent adjustments for %s: %s", code, adjustments)
                 if isinstance(fundamental_context, dict):
                     result.fundamental_context = fundamental_context
+                result.market_phase_summary = market_phase_summary
+                result.analysis_context_pack_overview = analysis_context_pack_overview
+                self._refresh_decision_action_for_final_result(
+                    result,
+                    report_type=report_type.value,
+                    previous_operation_advice=action_source_advice,
+                )
 
             resolved_stock_name = result.name if result and result.name else stock_name
 
@@ -1090,6 +1195,8 @@ class StockAnalysisPipeline:
                         news_content=initial_context.get("news_context"),
                         realtime_quote=realtime_quote,
                         chip_data=chip_data,
+                        analysis_context_pack_overview=analysis_context_pack_overview,
+                        market_phase_summary=market_phase_summary,
                     )
                     result.diagnostic_context_snapshot = agent_context_snapshot
                     agent_context_snapshot["stock_name"] = resolved_stock_name
@@ -1124,6 +1231,33 @@ class StockAnalysisPipeline:
             logger.exception(f"[{code}] Agent 详细错误信息:")
             return None
 
+    def _load_agent_analysis_context(self, code: str, stock_name: str) -> Dict[str, Any]:
+        """Load daily-bar context for Agent pack summaries without blocking analysis."""
+        try:
+            context = self.db.get_analysis_context(code)
+        except Exception as exc:
+            logger.warning(
+                "[%s] Agent analysis context load failed; daily_bars will be marked missing: %s",
+                code,
+                exc,
+            )
+            context = None
+
+        if isinstance(context, dict) and context:
+            enriched = dict(context)
+            enriched.setdefault("code", code)
+            if stock_name:
+                enriched.setdefault("stock_name", stock_name)
+            return enriched
+
+        return {
+            "code": code,
+            "stock_name": stock_name,
+            "data_missing": True,
+            "today": {},
+            "yesterday": {},
+        }
+
     def _agent_result_to_analysis_result(
         self,
         agent_result,
@@ -1137,6 +1271,7 @@ class StockAnalysisPipeline:
         将 AgentResult 转换为 AnalysisResult。
         """
         report_language = normalize_report_language(getattr(self.config, "report_language", "zh"))
+        dash = None
         result = AnalysisResult(
             code=code,
             name=stock_name,
@@ -1278,6 +1413,11 @@ class StockAnalysisPipeline:
                 result.analysis_summary = str(raw_summary)
             else:
                 result.analysis_summary = self._summary_fallback_from_result(result, report_language)
+            top_level_phase_decision = dash.get("phase_decision") if isinstance(dash, dict) else None
+            if isinstance(nested_dashboard, dict) and isinstance(top_level_phase_decision, dict):
+                nested_dashboard = dict(nested_dashboard)
+                nested_dashboard.setdefault("phase_decision", top_level_phase_decision)
+
             # The AI returns a top-level dict that contains a nested 'dashboard' sub-key
             # with core_conclusion / battle_plan / intelligence.  AnalysisResult's helper
             # methods (get_sniper_points, get_core_conclusion, etc.) expect that inner
@@ -1295,7 +1435,25 @@ class StockAnalysisPipeline:
             if not result.error_message:
                 result.error_message = "Agent failed to generate a valid decision dashboard" if report_language == "en" else "Agent 未能生成有效的决策仪表盘"
 
-        return result
+        explicit_action = dash.get("action") if isinstance(dash, dict) else None
+        if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
+            explicit_action = result.dashboard.get("action")
+        return populate_decision_action_fields(result, explicit_action=explicit_action)
+
+    @staticmethod
+    def _refresh_decision_action_for_final_result(
+        result: AnalysisResult,
+        *,
+        report_type: Any,
+        previous_operation_advice: Any,
+    ) -> AnalysisResult:
+        previous_advice = str(previous_operation_advice or "").strip()
+        current_advice = str(getattr(result, "operation_advice", None) or "").strip()
+        return populate_decision_action_fields(
+            result,
+            report_type=report_type,
+            use_existing_action=(previous_advice == current_advice),
+        )
 
     @staticmethod
     def _agent_dashboard_value(
@@ -1722,6 +1880,8 @@ class StockAnalysisPipeline:
         realtime_quote: Any,
         chip_data: Optional[ChipDistribution],
         news_result_count: Optional[int] = None,
+        analysis_context_pack_overview: Optional[Dict[str, Any]] = None,
+        market_phase_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         构建分析上下文快照
@@ -1736,6 +1896,10 @@ class StockAnalysisPipeline:
             snapshot["news_retrieval_content"] = news_content
         if news_result_count is not None:
             snapshot["news_result_count"] = news_result_count
+        if analysis_context_pack_overview is not None:
+            snapshot["analysis_context_pack_overview"] = analysis_context_pack_overview
+        if market_phase_summary is not None:
+            snapshot[MARKET_PHASE_SUMMARY_KEY] = market_phase_summary
         diagnostic_snapshot = current_diagnostic_snapshot()
         if diagnostic_snapshot is not None:
             snapshot["diagnostics"] = diagnostic_snapshot
@@ -1835,6 +1999,7 @@ class StockAnalysisPipeline:
         news_context: Optional[str],
         news_result_count: Optional[int],
         query_id: str,
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ) -> PipelineAnalysisArtifacts:
         return PipelineAnalysisArtifacts(
             code=code,
@@ -1853,6 +2018,7 @@ class StockAnalysisPipeline:
                 "query_id": query_id,
                 "trigger_source": self.query_source,
             },
+            portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
         )
 
     def _build_agent_analysis_artifacts(
@@ -1865,19 +2031,32 @@ class StockAnalysisPipeline:
         initial_context: Dict[str, Any],
         fundamental_context: Optional[Dict[str, Any]],
         query_id: str,
+        base_context: Optional[Dict[str, Any]] = None,
+        portfolio_context: Optional[Dict[str, Any]] = None,
     ) -> PipelineAnalysisArtifacts:
-        return PipelineAnalysisArtifacts(
-            code=code,
-            stock_name=stock_name,
-            market=market,
-            phase=phase,
-            base_context={
+        context_candidate = base_context
+        if not isinstance(context_candidate, dict):
+            context_candidate = initial_context.get("analysis_context")
+        if isinstance(context_candidate, dict) and context_candidate:
+            daily_context = dict(context_candidate)
+            daily_context.setdefault("code", code)
+            if stock_name:
+                daily_context.setdefault("stock_name", stock_name)
+        else:
+            daily_context = {
                 "code": code,
                 "stock_name": stock_name,
                 "data_missing": True,
                 "today": {},
                 "yesterday": {},
-            },
+            }
+
+        return PipelineAnalysisArtifacts(
+            code=code,
+            stock_name=stock_name,
+            market=market,
+            phase=phase,
+            base_context=daily_context,
             enhanced_context={},
             realtime_quote=initial_context.get("realtime_quote"),
             trend_result=initial_context.get("trend_result"),
@@ -1889,41 +2068,48 @@ class StockAnalysisPipeline:
                 "query_id": query_id,
                 "trigger_source": self.query_source,
             },
+            portfolio_context=dict(portfolio_context) if isinstance(portfolio_context, dict) else None,
         )
 
-    def _build_analysis_context_pack_summary(
+    def _build_analysis_context_pack_outputs(
         self,
         artifacts: PipelineAnalysisArtifacts,
         *,
         report_language: str,
         code: str,
         query_id: str,
-    ) -> str:
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
         try:
             pack = AnalysisContextBuilder.build(artifacts)
-            return format_analysis_context_pack_prompt_section(
+            summary = format_analysis_context_pack_prompt_section(
                 pack,
                 report_language=report_language,
             )
+            overview = render_analysis_context_pack_overview(
+                pack,
+                report_language=report_language,
+            )
+            return summary, overview
         except Exception as exc:
             logger.warning(
-                "AnalysisContextPack summary generation failed for %s query_id=%s: %s",
+                "AnalysisContextPack output generation failed for %s query_id=%s: %s",
                 code,
                 query_id,
                 exc,
             )
-            return ""
+            return "", None
 
     @staticmethod
     def _without_runtime_prompt_context(context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Return a shallow copy without runtime-only prompt context.
 
-        Market phase and AnalysisContextPack summaries are prompt inputs only;
-        stable history/task metadata is intentionally left for later phases.
+        Market phase and AnalysisContextPack summaries are prompt inputs only.
+        P4 stores only the separately rendered public overview at snapshot top level.
         """
         sanitized = dict(context)
         sanitized.pop("market_phase_context", None)
+        sanitized.pop("portfolio_context", None)
         sanitized.pop("analysis_context_pack", None)
         sanitized.pop("analysis_context_pack_summary", None)
         return sanitized
@@ -2464,6 +2650,24 @@ class StockAnalysisPipeline:
                 send_context = self.notifier.send_to_context(report)
                 if send_context:
                     _record_channel_result("__context__", True)
+
+                should_broadcast_static = True
+                should_broadcast_static_func = getattr(
+                    self.notifier,
+                    "should_broadcast_static_channels",
+                    None,
+                )
+                if callable(should_broadcast_static_func):
+                    should_broadcast_static = bool(should_broadcast_static_func())
+                if not should_broadcast_static:
+                    if not send_context:
+                        _record_channel_result("__context__", False)
+                    if send_context:
+                        logger.info("决策仪表盘推送成功")
+                    else:
+                        logger.warning("决策仪表盘推送失败")
+                    logger.info("交互式消息上下文回复模式：已跳过静态通知渠道")
+                    return
 
                 if channels and hasattr(self.notifier, "evaluate_noise_control"):
                     report_type_key = report_type.value if isinstance(report_type, ReportType) else str(report_type)

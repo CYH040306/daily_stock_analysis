@@ -67,6 +67,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
 
+    def test_get_config_masks_alphasift_install_spec(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "ALPHASIFT_INSTALL_SPEC=git+https://user:token@example.com/internal/alphasift.git",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["ALPHASIFT_INSTALL_SPEC"]["value"], payload["mask_token"])
+        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["is_masked"])
+        self.assertTrue(items["ALPHASIFT_INSTALL_SPEC"]["schema"]["is_sensitive"])
+
     def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
@@ -117,6 +130,244 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "")
         self.assertTrue(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
+
+    def test_get_config_uses_runtime_env_as_display_fallback(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "300750",
+                "LITELLM_MODEL": "openai/gpt-5",
+                "LLM_CHANNELS": "my_proxy",
+                "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+                "LLM_MY_PROXY_MODELS": "gpt-5",
+                "LLM_UNUSED_API_KEY": "sk-should-not-leak",
+                "UNRELATED_API_KEY": "sk-should-not-leak",
+            },
+        ):
+            payload = self.service.get_config(include_schema=True)
+            raw_payload = self.service.get_config(include_schema=False)
+
+        items = {item["key"]: item for item in payload["items"]}
+        raw_items = {item["key"]: item for item in raw_payload["items"]}
+        self.assertEqual(items["STOCK_LIST"]["value"], "600519")
+        self.assertTrue(items["STOCK_LIST"]["raw_value_exists"])
+        self.assertEqual(items["LITELLM_MODEL"]["value"], "openai/gpt-5")
+        self.assertFalse(items["LITELLM_MODEL"]["raw_value_exists"])
+        self.assertEqual(items["LLM_CHANNELS"]["value"], "my_proxy")
+        self.assertFalse(items["LLM_CHANNELS"]["raw_value_exists"])
+        self.assertEqual(items["LLM_MY_PROXY_BASE_URL"]["value"], "https://proxy.example.com/v1")
+        self.assertFalse(items["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+        self.assertEqual(items["LLM_MY_PROXY_MODELS"]["value"], "gpt-5")
+        self.assertFalse(items["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+        self.assertNotIn("LLM_UNUSED_API_KEY", items)
+        self.assertNotIn("UNRELATED_API_KEY", items)
+        self.assertNotIn("LLM_UNUSED_API_KEY", raw_items)
+        self.assertNotIn("UNRELATED_API_KEY", raw_items)
+
+    def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        startup_env = {
+            "LITELLM_MODEL": "openai/gpt-5",
+            "LLM_CHANNELS": "my_proxy",
+            "LLM_MY_PROXY_PROTOCOL": "openai",
+            "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+            "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+            "LLM_MY_PROXY_MODELS": "openai/gpt-5",
+        }
+        with patch.dict(os.environ, startup_env, clear=False):
+            payload_before = self.service.get_config(include_schema=True)
+            items_before = {item["key"]: item for item in payload_before["items"]}
+            self.assertEqual(items_before["LITELLM_MODEL"]["value"], "openai/gpt-5")
+            self.assertFalse(items_before["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(
+                items_before["LLM_MY_PROXY_BASE_URL"]["value"],
+                "https://proxy.example.com/v1",
+            )
+            self.assertFalse(items_before["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(items_before["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
+            self.assertFalse(items_before["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+
+            current_version = self.manager.get_config_version()
+            response = self.service.update(
+                config_version=current_version,
+                items=[{"key": "STOCK_LIST", "value": "300750"}],
+                reload_now=False,
+            )
+            self.assertTrue(response["success"])
+
+            current_map = self.manager.read_config_map()
+            self.assertEqual(current_map["STOCK_LIST"], "300750")
+            self.assertNotIn("LITELLM_MODEL", current_map)
+            self.assertNotIn("LLM_MY_PROXY_BASE_URL", current_map)
+            self.assertNotIn("LLM_MY_PROXY_MODELS", current_map)
+
+            payload_after = self.service.get_config(include_schema=True)
+            items_after = {item["key"]: item for item in payload_after["items"]}
+            self.assertEqual(items_after["LITELLM_MODEL"]["value"], "openai/gpt-5")
+            self.assertFalse(items_after["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(
+                items_after["LLM_MY_PROXY_BASE_URL"]["value"],
+                "https://proxy.example.com/v1",
+            )
+            self.assertFalse(items_after["LLM_MY_PROXY_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(items_after["LLM_MY_PROXY_MODELS"]["value"], "openai/gpt-5")
+            self.assertFalse(items_after["LLM_MY_PROXY_MODELS"]["raw_value_exists"])
+
+    def test_runtime_env_fallback_does_not_override_saved_provider_and_base_url_settings(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "OPENAI_MODEL=gpt-4.1",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_BASE_URL": "https://runtime-openai.v1",
+                "OPENAI_API_KEY": "runtime-openai-key",
+            },
+            clear=False,
+        ):
+            pre_save = self.service.get_config(include_schema=True)
+            pre_save_items = {item["key"]: item for item in pre_save["items"]}
+
+            self.assertEqual(pre_save_items["OPENAI_BASE_URL"]["value"], "https://runtime-openai.v1")
+            self.assertFalse(pre_save_items["OPENAI_BASE_URL"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["OPENAI_API_KEY"]["value"], "runtime-openai-key")
+            self.assertFalse(pre_save_items["OPENAI_API_KEY"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["LITELLM_MODEL"]["value"], "openai/gpt-4o-mini")
+            self.assertTrue(pre_save_items["LITELLM_MODEL"]["raw_value_exists"])
+            self.assertEqual(pre_save_items["OPENAI_MODEL"]["value"], "gpt-4.1")
+            self.assertTrue(pre_save_items["OPENAI_MODEL"]["raw_value_exists"])
+
+            response = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "STOCK_LIST", "value": "300750"}],
+                reload_now=False,
+            )
+            self.assertTrue(response["success"])
+
+            current_map = self.manager.read_config_map()
+            self.assertEqual(current_map["STOCK_LIST"], "300750")
+            self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
+            self.assertEqual(current_map["OPENAI_MODEL"], "gpt-4.1")
+            self.assertNotIn("OPENAI_BASE_URL", current_map)
+            self.assertNotIn("OPENAI_API_KEY", current_map)
+
+    def test_validate_uses_runtime_injected_llm_channels_for_support_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "LLM_CHANNELS": "my_proxy",
+                "LLM_MY_PROXY_PROTOCOL": "openai",
+                "LLM_MY_PROXY_API_KEYS": "sk-test-value",
+                "LLM_MY_PROXY_BASE_URL": "https://proxy.example.com/v1",
+                "LLM_MY_PROXY_MODELS": "openai/gpt-5",
+            },
+            clear=False,
+        ):
+            validation = self.service.validate(
+                items=[{"key": "LLM_MY_PROXY_BASE_URL", "value": "not-a-url"}],
+            )
+
+        self.assertFalse(validation["valid"])
+        self.assertTrue(
+            any(
+                issue["key"] == "LLM_MY_PROXY_BASE_URL" and issue["code"] == "invalid_url"
+                for issue in validation["issues"]
+            )
+        )
+
+    def test_get_config_switch_type_uses_runtime_env_display_fallback(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            "LOG_LEVEL=INFO",
+        )
+
+        with patch.dict(os.environ, {"REPORT_SHOW_LLM_MODEL": "false"}, clear=False):
+            payload = self.service.get_config(include_schema=True)
+
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertEqual(items["REPORT_SHOW_LLM_MODEL"]["value"], "false")
+        self.assertFalse(items["REPORT_SHOW_LLM_MODEL"]["raw_value_exists"])
+
+    def test_get_config_with_schema_hides_unregistered_env_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "DATABASE_PATH=./custom/stock_analysis.db",
+            "SQLITE_WAL_ENABLED=true",
+            "USE_PROXY=true",
+            "PROXY_HOST=127.0.0.1",
+            "PROXY_PORT=10809",
+            "LOG_DIR=./logs",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertNotIn("DATABASE_PATH", items)
+        self.assertNotIn("SQLITE_WAL_ENABLED", items)
+        self.assertNotIn("USE_PROXY", items)
+        self.assertNotIn("PROXY_HOST", items)
+        self.assertNotIn("PROXY_PORT", items)
+        self.assertIn("LOG_DIR", items)
+        self.assertEqual(items["LOG_DIR"]["schema"]["help_key"], "settings.system.LOG_DIR")
+
+    def test_get_config_with_schema_keeps_declared_llm_channel_support_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "LLM_CHANNELS=deepseek,my_proxy",
+            "LLM_DEEPSEEK_PROTOCOL=deepseek",
+            "LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com",
+            "LLM_DEEPSEEK_API_KEY=sk-test-value",
+            "LLM_DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro",
+            "LLM_MY_PROXY_PROTOCOL=openai",
+            "LLM_MY_PROXY_API_KEYS=sk-key-1,sk-key-2",
+            "LLM_MY_PROXY_MODELS=gpt-5.5",
+            "LLM_UNUSED_API_KEY=sk-should-not-leak",
+            "DATABASE_PATH=./custom/stock_analysis.db",
+        )
+
+        payload = self.service.get_config(include_schema=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertIn("LLM_CHANNELS", items)
+        self.assertEqual(items["LLM_DEEPSEEK_API_KEY"]["value"], "sk-test-value")
+        self.assertEqual(items["LLM_DEEPSEEK_MODELS"]["value"], "deepseek-v4-flash,deepseek-v4-pro")
+        self.assertEqual(items["LLM_MY_PROXY_API_KEYS"]["value"], "sk-key-1,sk-key-2")
+        self.assertEqual(items["LLM_MY_PROXY_MODELS"]["value"], "gpt-5.5")
+        self.assertEqual(items["LLM_MY_PROXY_API_KEYS"]["schema"]["category"], "ai_model")
+        self.assertNotIn("LLM_UNUSED_API_KEY", items)
+        self.assertNotIn("DATABASE_PATH", items)
+
+    def test_get_config_without_schema_keeps_unregistered_env_keys(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "DATABASE_PATH=./custom/stock_analysis.db",
+            "SQLITE_WAL_ENABLED=true",
+        )
+
+        payload = self.service.get_config(include_schema=False)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["DATABASE_PATH"]["value"], "./custom/stock_analysis.db")
+        self.assertEqual(items["SQLITE_WAL_ENABLED"]["value"], "true")
+        self.assertNotIn("schema", items["DATABASE_PATH"])
 
     def test_get_setup_status_reports_required_gaps_for_empty_config(self) -> None:
         self._rewrite_env("")
@@ -270,6 +521,42 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         gotify_with_message = next(check for check in status["checks"] if check["key"] == "notification")
         self.assertEqual(gotify_with_message["status"], "optional")
 
+    def test_get_setup_status_accepts_feishu_app_bot_triad(self) -> None:
+        self._rewrite_env(
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=600519",
+            "FEISHU_APP_ID=cli_xxx",
+            "FEISHU_APP_SECRET=secret_xxx",
+            "FEISHU_CHAT_ID=oc_xxx",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            status = self.service.get_setup_status()
+
+        notification = next(check for check in status["checks"] if check["key"] == "notification")
+        self.assertEqual(notification["status"], "configured")
+
+    def test_get_setup_status_rejects_partial_feishu_app_bot_triad(self) -> None:
+        base_lines = [
+            "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+            "GEMINI_API_KEY=secret-key-value",
+            "STOCK_LIST=600519",
+        ]
+        partial_cases = [
+            ("FEISHU_APP_ID=cli_xxx", "FEISHU_APP_SECRET=secret_xxx"),
+            ("FEISHU_APP_ID=cli_xxx", "FEISHU_CHAT_ID=oc_xxx"),
+            ("FEISHU_APP_SECRET=secret_xxx", "FEISHU_CHAT_ID=oc_xxx"),
+        ]
+
+        for partial in partial_cases:
+            with self.subTest(partial=partial):
+                self._rewrite_env(*base_lines, *partial)
+                with patch.dict(os.environ, {}, clear=True):
+                    status = self.service.get_setup_status()
+                notification = next(check for check in status["checks"] if check["key"] == "notification")
+                self.assertEqual(notification["status"], "optional")
+
     def test_get_setup_status_uses_runtime_env_without_reloading_singletons(self) -> None:
         self._rewrite_env("")
 
@@ -320,6 +607,17 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
         self.assertEqual(payload["config_version"], self.manager.get_config_version())
 
+    def test_export_desktop_env_preserves_hidden_web_settings_keys(self) -> None:
+        self.env_path.write_text(
+            "STOCK_LIST=600519\nDATABASE_PATH=./custom/stock_analysis.db\nUSE_PROXY=true\n",
+            encoding="utf-8",
+        )
+
+        payload = self.service.export_desktop_env()
+
+        self.assertIn("DATABASE_PATH=./custom/stock_analysis.db\n", payload["content"])
+        self.assertIn("USE_PROXY=true\n", payload["content"])
+
     def test_import_desktop_env_merges_keys_without_deleting_unspecified_values(self) -> None:
         current_version = self.manager.get_config_version()
 
@@ -334,6 +632,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(current_map["STOCK_LIST"], "300750")
         self.assertEqual(current_map["CUSTOM_NOTE"], "desktop backup")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
+
+    def test_import_desktop_env_preserves_hidden_web_settings_keys(self) -> None:
+        current_version = self.manager.get_config_version()
+
+        self.service.import_desktop_env(
+            config_version=current_version,
+            content="DATABASE_PATH=./custom/stock_analysis.db\nPROXY_HOST=127.0.0.1\n",
+            reload_now=False,
+        )
+
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["DATABASE_PATH"], "./custom/stock_analysis.db")
+        self.assertEqual(current_map["PROXY_HOST"], "127.0.0.1")
 
     def test_import_desktop_env_treats_mask_token_as_literal_value(self) -> None:
         current_version = self.manager.get_config_version()
@@ -407,6 +718,46 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         current_map = self.manager.read_config_map()
         self.assertEqual(current_map["STOCK_LIST"], "600519,300750")
         self.assertEqual(current_map["GEMINI_API_KEY"], "secret-key-value")
+
+    def test_update_alphasift_enable_does_not_rewrite_llm_fields(self) -> None:
+        self._rewrite_env(
+            "STOCK_LIST=600519,000001",
+            "LITELLM_MODEL=openai/gpt-4o-mini",
+            "AGENT_LITELLM_MODEL=openai/gpt-4o",
+            "OPENAI_BASE_URL=https://api.openai.com/v1",
+            "LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,openai/gpt-4o",
+            "ALPHASIFT_ENABLED=false",
+            "ALPHASIFT_INSTALL_SPEC=git+https://github.com/ZhuLinsen/alphasift.git@1a0ed8c99b3615c0cb1076e6029827ffc6de2344",
+            "GEMINI_API_KEY=legacy-secret",
+        )
+
+        response = self.service.update(
+            config_version=self.manager.get_config_version(),
+            items=[
+                {"key": "ALPHASIFT_ENABLED", "value": "true"},
+                {"key": "ALPHASIFT_INSTALL_SPEC", "value": "******"},
+                {"key": "GEMINI_API_KEY", "value": "******"},
+            ],
+            mask_token="******",
+            reload_now=False,
+        )
+
+        self.assertTrue(response["success"])
+        self.assertEqual(response["applied_count"], 1)
+        self.assertIn("ALPHASIFT_ENABLED", response["updated_keys"])
+        self.assertEqual(response["skipped_masked_count"], 2)
+
+        current_map = self.manager.read_config_map()
+        self.assertEqual(current_map["ALPHASIFT_ENABLED"], "true")
+        self.assertEqual(
+            current_map["ALPHASIFT_INSTALL_SPEC"],
+            "git+https://github.com/ZhuLinsen/alphasift.git@1a0ed8c99b3615c0cb1076e6029827ffc6de2344",
+        )
+        self.assertEqual(current_map["GEMINI_API_KEY"], "legacy-secret")
+        self.assertEqual(current_map["LITELLM_MODEL"], "openai/gpt-4o-mini")
+        self.assertEqual(current_map["AGENT_LITELLM_MODEL"], "openai/gpt-4o")
+        self.assertEqual(current_map["OPENAI_BASE_URL"], "https://api.openai.com/v1")
+        self.assertEqual(current_map["LITELLM_FALLBACK_MODELS"], "openai/gpt-4o-mini,openai/gpt-4o")
 
     def test_validate_reports_invalid_time(self) -> None:
         validation = self.service.validate(items=[{"key": "SCHEDULE_TIME", "value": "25:70"}])
@@ -536,13 +887,16 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             ]
         )
         self.assertTrue(validation["valid"])
-        self.assertTrue(
-            any(
-                issue["code"] == "feishu_mode_mismatch"
-                and issue["severity"] == "warning"
-                for issue in validation["issues"]
-            )
+        issue = next(
+            issue
+            for issue in validation["issues"]
+            if issue["code"] == "feishu_mode_mismatch"
+            and issue["severity"] == "warning"
         )
+        self.assertEqual(issue["key"], "FEISHU_CHAT_ID")
+        self.assertIn("FEISHU_CHAT_ID", issue["message"])
+        self.assertIn("static notification:", issue["expected"])
+        self.assertIn("event subscription:", issue["expected"])
 
     def test_validate_no_warning_when_feishu_cloud_doc_credentials_without_webhook(self) -> None:
         validation = self.service.validate(
@@ -1157,6 +1511,60 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(payload["success"])
         self.assertEqual(payload["error_code"], "config_missing")
         self.assertIn("TELEGRAM_CHAT_ID", payload["message"])
+
+    def test_test_notification_channel_reports_nearest_feishu_app_bot_missing_key(self) -> None:
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="feishu",
+                items=[
+                    {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                    {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=3,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "config_missing")
+        self.assertIn("FEISHU_CHAT_ID", payload["message"])
+        self.assertNotIn("FEISHU_WEBHOOK_URL", payload["message"])
+
+    def test_test_notification_channel_feishu_domain_draft_builds_isolated_config(self) -> None:
+        captured: Dict[str, Any] = {}
+
+        def fake_dispatch(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "message": "ok",
+                "error_code": None,
+                "stage": "notification_send",
+                "retryable": False,
+                "latency_ms": 0,
+                "attempts": [],
+            }
+
+        with self._notification_test_env(), patch.object(
+            SystemConfigService,
+            "_dispatch_notification_test",
+            side_effect=fake_dispatch,
+        ):
+            payload = self.service.test_notification_channel(
+                channel="feishu",
+                items=[
+                    {"key": "FEISHU_APP_ID", "value": "cli_xxx"},
+                    {"key": "FEISHU_APP_SECRET", "value": "secret_xxx"},
+                    {"key": "FEISHU_CHAT_ID", "value": "oc_xxx"},
+                    {"key": "FEISHU_DOMAIN", "value": "lark"},
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=3,
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(captured["config"].feishu_domain, "lark")
 
     @patch("src.notification_sender.wechat_sender.requests.post")
     def test_test_notification_channel_skips_masked_secret_overwrite(self, mock_post) -> None:

@@ -25,6 +25,8 @@ import {
 } from '../utils/chatFollowUp';
 import { isNearBottom } from '../utils/chatScroll';
 import { getReportText } from '../utils/reportLanguage';
+import { extractStockCodesFromMessage } from '../utils/chatStockCode';
+import { findMatchingStockCode, includesStockCode, normalizeStockCode } from '../utils/stockCode';
 
 // Quick question examples shown on empty state
 const QUICK_QUESTIONS = [
@@ -38,6 +40,17 @@ const QUICK_QUESTIONS = [
 
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_COMPRESSION_CONFIG_KEY = 'AGENT_CONTEXT_COMPRESSION_ENABLED';
+const STRONG_COMPARE_STOCK_MESSAGE_RE = /比较|对比|\bvs\b|和[^，。,.!?！？]{0,40}比/i;
+const WEAK_COMPARE_STOCK_MESSAGE_RE = /差异(?!化)|区别|不同|相比|对照|比一比/;
+const CHOICE_COMPARE_STOCK_MESSAGE_RE = /哪个|哪只|哪一个|谁更|更值得|更适合|怎么选|选哪|二选一/;
+const LINKED_COMPARE_STOCK_MESSAGE_RE = /(?:和|与|跟|同)[^，。,.!?！？]{0,40}(?:差异(?!化)|区别|不同|相比|对照|比一比)/;
+const SWITCH_STOCK_MESSAGE_RE = /换成|改看|分析|看看|研究|诊断/;
+
+type ActiveStockContext = Pick<ChatFollowUpContext, 'stock_code' | 'stock_name'>;
+type ActiveStockResolution = {
+  context: ActiveStockContext;
+  useForCurrentSend: boolean;
+};
 
 const getMessageSkillNames = (msg: Message): string[] => {
   if (msg.skillNames?.length) return msg.skillNames;
@@ -48,6 +61,92 @@ const getMessageSkillNames = (msg: Message): string[] => {
 };
 
 const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg).join('、');
+
+const isCompareStockMessage = (
+  message: string,
+  stockCodes: string[],
+  currentStockCode?: string | null,
+): boolean => {
+  if (STRONG_COMPARE_STOCK_MESSAGE_RE.test(message)) {
+    return true;
+  }
+  const current = currentStockCode ? normalizeStockCode(currentStockCode) : null;
+  const newStockCodes = current
+    ? stockCodes.filter((code) => code !== current)
+    : stockCodes;
+  if (newStockCodes.length >= 2) {
+    return true;
+  }
+  if (CHOICE_COMPARE_STOCK_MESSAGE_RE.test(message) && stockCodes.length >= 2) {
+    return true;
+  }
+  if (!WEAK_COMPARE_STOCK_MESSAGE_RE.test(message)) {
+    return false;
+  }
+  if (stockCodes.length >= 2) {
+    return true;
+  }
+  if (!currentStockCode) {
+    return false;
+  }
+  const hasNewStock = stockCodes.some((code) => code !== current);
+  return hasNewStock && LINKED_COMPARE_STOCK_MESSAGE_RE.test(message);
+};
+
+const resolveActiveStockContextFromMessage = (
+  message: string,
+  currentContext: ActiveStockContext | null,
+): ActiveStockResolution | null => {
+  const stockCodes = extractStockCodesFromMessage(message);
+  const stockCode = stockCodes[0] ?? null;
+  if (!stockCode) {
+    return null;
+  }
+
+  const isCompare = isCompareStockMessage(message, stockCodes, currentContext?.stock_code);
+  const isSwitch = SWITCH_STOCK_MESSAGE_RE.test(message);
+  const currentStockCode = currentContext?.stock_code
+    ? normalizeStockCode(currentContext.stock_code)
+    : null;
+  const newStockCodes = currentStockCode
+    ? stockCodes.filter((code) => code !== currentStockCode)
+    : stockCodes;
+  // Explicit switches can mention the old stock; use the single new code when present.
+  const targetStockCode = isSwitch && newStockCodes.length === 1
+    ? newStockCodes[0]
+    : stockCode;
+  const isDifferentStock = currentStockCode !== targetStockCode;
+
+  // Compare messages and implicit follow-ups must not rewrite the active stock context.
+  if (isCompare || (currentContext && !isSwitch)) {
+    return null;
+  }
+
+  return {
+    context: {
+      stock_code: targetStockCode,
+      stock_name: currentContext && !isDifferentStock
+        ? currentContext.stock_name
+        : null,
+    },
+    // Only explicit switches should affect the context sent with the current request.
+    useForCurrentSend: isSwitch && isDifferentStock,
+  };
+};
+
+const restoreActiveStockContextFromMessages = (messages: Message[]): ActiveStockContext | null => {
+  let restoredContext: ActiveStockContext | null = null;
+  for (const message of messages) {
+    if (message.role !== 'user') {
+      continue;
+    }
+    const resolution = resolveActiveStockContextFromMessage(message.content, restoredContext);
+    if (resolution) {
+      restoredContext = resolution.context;
+    }
+  }
+  return restoredContext;
+};
 
 const ChatPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -72,6 +171,12 @@ const ChatPage: React.FC = () => {
   const [contextCompressionError, setContextCompressionError] = useState<string | null>(null);
   const [copiedMessages, setCopiedMessages] = useState<Set<string>>(new Set());
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const [watchlistCodes, setWatchlistCodes] = useState<string[]>([]);
+  const [isWatchlistActioning, setIsWatchlistActioning] = useState(false);
+  const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null);
+  const [activeStockCode, setActiveStockCode] = useState<string | null>(null);
+  const [activeStockContext, setActiveStockContext] = useState<ActiveStockContext | null>(null);
+  const watchlistMessageTimerRef = useRef<number | null>(null);
   const copyResetTimerRef = useRef<Partial<Record<string, number>>>({});
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -109,6 +214,67 @@ const ChatPage: React.FC = () => {
     isMountedRef.current = false;
   }, []);
 
+  const loadWatchlist = useCallback(async () => {
+    try {
+      const codes = await systemConfigApi.getWatchlist();
+      if (isMountedRef.current) {
+        setWatchlistCodes(codes);
+      }
+    } catch {
+      // ignore error silently
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadWatchlist();
+  }, [loadWatchlist]);
+
+  const stockInWatchlist = useCallback(
+    (stockCode: string) => includesStockCode(watchlistCodes, stockCode),
+    [watchlistCodes],
+  );
+
+  const handleToggleWatchlist = useCallback(
+    async (stockCode: string) => {
+      if (!stockCode || isWatchlistActioning) return;
+      setIsWatchlistActioning(true);
+      setWatchlistMessage(null);
+      try {
+        const existingStockCode = findMatchingStockCode(watchlistCodes, stockCode);
+        if (existingStockCode) {
+          const codes = await systemConfigApi.removeFromWatchlist(existingStockCode);
+          if (isMountedRef.current) {
+            setWatchlistCodes(codes);
+            setWatchlistMessage(`已从自选中移除 ${stockCode}`);
+          }
+        } else {
+          const codes = await systemConfigApi.addToWatchlist(stockCode);
+          if (isMountedRef.current) {
+            setWatchlistCodes(codes);
+            setWatchlistMessage(`已加入自选 ${stockCode}`);
+          }
+        }
+      } catch {
+        if (isMountedRef.current) {
+          setWatchlistMessage('操作失败，请重试');
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setIsWatchlistActioning(false);
+          if (watchlistMessageTimerRef.current !== null) {
+            window.clearTimeout(watchlistMessageTimerRef.current);
+          }
+          watchlistMessageTimerRef.current = window.setTimeout(() => {
+            if (isMountedRef.current) {
+              setWatchlistMessage(null);
+            }
+          }, 3000);
+        }
+      }
+    },
+    [isWatchlistActioning, watchlistCodes],
+  );
+
   const {
     messages,
     loading,
@@ -123,6 +289,18 @@ const ChatPage: React.FC = () => {
     startStream,
     clearCompletionBadge,
   } = useAgentChatStore();
+
+  useEffect(() => {
+    if (activeStockContext || messages.length === 0) {
+      return;
+    }
+    const restoredContext = restoreActiveStockContextFromMessages(messages);
+    if (!restoredContext) {
+      return;
+    }
+    setActiveStockContext(restoredContext);
+    setActiveStockCode(restoredContext.stock_code);
+  }, [activeStockContext, messages, sessionId]);
 
   const syncScrollState = useCallback(() => {
     const viewport = messagesViewportRef.current;
@@ -307,16 +485,25 @@ const ChatPage: React.FC = () => {
 
   const handleStartNewChat = useCallback(() => {
     followUpContextRef.current = null;
+    setActiveStockContext(null);
+    setActiveStockCode(null);
     requestScrollToBottom('auto');
     useAgentChatStore.getState().startNewChat();
     setSidebarOpen(false);
   }, [requestScrollToBottom]);
 
   const handleSwitchSession = useCallback((targetSessionId: string) => {
+    if (targetSessionId === sessionId) {
+      setSidebarOpen(false);
+      return;
+    }
+    followUpContextRef.current = null;
+    setActiveStockContext(null);
+    setActiveStockCode(null);
     requestScrollToBottom('auto');
     switchSession(targetSessionId);
     setSidebarOpen(false);
-  }, [requestScrollToBottom, switchSession]);
+  }, [requestScrollToBottom, sessionId, switchSession]);
 
   const confirmDelete = useCallback(() => {
     if (!deleteConfirmId) return;
@@ -346,6 +533,11 @@ const ChatPage: React.FC = () => {
 
     const hydrationToken = ++followUpHydrationTokenRef.current;
     setInput(buildFollowUpPrompt(stock, name));
+    setActiveStockCode(stock);
+    setActiveStockContext({
+      stock_code: stock,
+      stock_name: name,
+    });
     followUpContextRef.current = {
       stock_code: stock,
       stock_name: name,
@@ -377,11 +569,24 @@ const ChatPage: React.FC = () => {
       const usedSkillIds = normalizeSelectedSkillIds(overrideSkillIds ?? selectedSkillIds);
       const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
 
+      let nextActiveStockContext = activeStockContext;
+      let useActiveContextForThisSend = false;
+      const stockResolution = resolveActiveStockContextFromMessage(msgText, activeStockContext);
+      if (stockResolution) {
+        nextActiveStockContext = stockResolution.context;
+        useActiveContextForThisSend = stockResolution.useForCurrentSend;
+        setActiveStockContext(nextActiveStockContext);
+        setActiveStockCode(nextActiveStockContext.stock_code);
+      }
+      const contextForSend = useActiveContextForThisSend
+        ? nextActiveStockContext
+        : followUpContextRef.current ?? nextActiveStockContext ?? undefined;
+
       const payload = {
         message: msgText,
         session_id: sessionId,
         ...(usedSkillIds.length > 0 ? { skills: usedSkillIds } : {}),
-        context: followUpContextRef.current ?? undefined,
+        context: contextForSend ?? undefined,
       };
       followUpHydrationTokenRef.current += 1;
       followUpContextRef.current = null;
@@ -394,7 +599,7 @@ const ChatPage: React.FC = () => {
         skillName: usedSkillNames.join('、'),
       });
     },
-    [getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream],
+    [activeStockContext, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1126,6 +1331,24 @@ const ChatPage: React.FC = () => {
                     </label>
                   );
                 })}
+              </div>
+            )}
+
+            {activeStockCode && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-text font-mono">{activeStockCode}</span>
+                <Button
+                  variant="secondary"
+                  size="xsm"
+                  isLoading={isWatchlistActioning}
+                  onClick={() => void handleToggleWatchlist(activeStockCode)}
+                  className="text-[11px]"
+                >
+                  {stockInWatchlist(activeStockCode) ? '从自选删除' : '加入自选'}
+                </Button>
+                {watchlistMessage && (
+                  <span className="text-[11px] text-secondary-text animate-in fade-in">{watchlistMessage}</span>
+                )}
               </div>
             )}
 

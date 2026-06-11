@@ -1312,6 +1312,13 @@ function configureElectronAutoUpdater() {
 
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  if (isWindows && app.isPackaged) {
+    const installDirectory = path.dirname(app.getPath('exe'));
+    if (installDirectory) {
+      updater.installDirectory = installDirectory;
+      logLine(`[update] auto updater install directory set to ${updater.installDirectory}`);
+    }
+  }
 
   updater.on('checking-for-update', () => {
     setDesktopUpdateState({
