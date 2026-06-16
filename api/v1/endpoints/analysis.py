@@ -552,7 +552,7 @@ def trigger_market_review(
 def get_task_list(
     status: Optional[str] = Query(
         None,
-        description="筛选状态：pending, processing, completed, failed（支持逗号分隔多个）"
+        description="筛选状态：pending, processing, completed, failed, cancel_requested, cancelled（支持逗号分隔多个）"
     ),
     limit: int = Query(20, description="返回数量限制", ge=1, le=100),
 ) -> TaskListResponse:
@@ -698,6 +698,8 @@ def _format_sse_event(event_type: str, data: Dict[str, Any]) -> str:
 def _load_history_run_flow_by_query_id(
     query_id: str,
     *,
+    code: Optional[str] = None,
+    report_type: Optional[str] = None,
     fail_open: bool = False,
 ) -> Optional[RunFlowSnapshot]:
     try:
@@ -705,7 +707,11 @@ def _load_history_run_flow_by_query_id(
         from src.services.history_service import HistoryService
 
         service = HistoryService(DatabaseManager.get_instance())
-        return service.resolve_and_get_run_flow(query_id)
+        return service.resolve_and_get_run_flow(
+            query_id,
+            code=code,
+            report_type=report_type,
+        )
     except Exception as e:
         if fail_open:
             logger.debug(
@@ -740,8 +746,16 @@ def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
 
     if task:
         if task.status == TaskStatusEnum.COMPLETED:
+            task_report_type = _history_report_type_for_task_flow(
+                getattr(task, "report_type", None)
+            )
+            task_stock_code = _safe_task_flow_text(getattr(task, "stock_code", None), max_length=32)
+            if task_report_type == "market_review":
+                task_stock_code = "MARKET"
             history_snapshot = _load_history_run_flow_by_query_id(
                 task_id,
+                code=task_stock_code,
+                report_type=task_report_type,
                 fail_open=True,
             )
             if history_snapshot is not None:
@@ -757,6 +771,31 @@ def get_task_run_flow(task_id: str) -> RunFlowSnapshot:
         raise api_error(500, "internal_error", f"查询任务运行流失败: {str(e)}")
 
     raise api_error(404, "not_found", f"任务 {task_id} 不存在或已过期")
+
+
+def _safe_task_flow_text(value: Any, *, max_length: int) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:max_length]
+
+
+def _history_report_type_for_task_flow(value: Any) -> Optional[str]:
+    text = _safe_task_flow_text(value, max_length=64)
+    if text is None:
+        return None
+    normalized = text.lower().strip().replace("-", "_")
+    aliases = {
+        "detailed": "full",
+        "simple": "simple",
+        "full": "full",
+        "brief": "brief",
+        "market": "market_review",
+        "market_review": "market_review",
+    }
+    return aliases.get(normalized, normalized)
 
 
 def _datetime_to_iso(value: Any) -> Optional[str]:

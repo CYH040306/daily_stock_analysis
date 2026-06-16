@@ -78,6 +78,19 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
         self.assertEqual(config.alphasift_install_spec, DEFAULT_ALPHASIFT_INSTALL_SPEC)
 
+    def test_env_example_alphasift_install_spec_matches_trusted_default(self):
+        env_example = Path(__file__).resolve().parents[1] / ".env.example"
+
+        for line in env_example.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ALPHASIFT_INSTALL_SPEC="):
+                self.assertEqual(
+                    line,
+                    f"ALPHASIFT_INSTALL_SPEC={DEFAULT_ALPHASIFT_INSTALL_SPEC}",
+                )
+                break
+        else:
+            self.fail("ALPHASIFT_INSTALL_SPEC missing from .env.example")
+
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_alphasift_install_spec_honors_explicit_empty(
@@ -301,6 +314,21 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         with patch.dict(os.environ, {"MARKET_REVIEW_COLOR_SCHEME": "red-up"}, clear=True):
             config = Config._load_from_env()
         self.assertEqual(config.market_review_color_scheme, "red_up")
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_daily_market_context_enabled_defaults_on_and_can_disable(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+        self.assertTrue(config.daily_market_context_enabled)
+
+        with patch.dict(os.environ, {"DAILY_MARKET_CONTEXT_ENABLED": "false"}, clear=True):
+            config = Config._load_from_env()
+        self.assertFalse(config.daily_market_context_enabled)
 
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_runtime_mutable_keys_reload_from_updated_env_file_after_runtime_refresh(

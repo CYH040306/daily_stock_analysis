@@ -1,26 +1,28 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BarChart3, Check, SlidersHorizontal } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { analysisApi } from '../api/analysis';
 import { historyApi } from '../api/history';
 import { agentApi, type SkillInfo } from '../api/agent';
 import { systemConfigApi } from '../api/systemConfig';
-import { ApiErrorAlert, Button, EmptyState, InlineAlert } from '../components/common';
+import { ApiErrorAlert, Button, Drawer, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { StockHistoryTrendDrawer, StockBar } from '../components/history';
 import { ReportMarkdownDrawer } from '../components/report/ReportMarkdownDrawer';
 import { MarketReviewReportView } from '../components/report/MarketReviewReportView';
 import { ReportSummary } from '../components/report/ReportSummary';
+import { RunFlowPanel } from '../components/run-flow';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import { useWatchlist } from '../hooks/useWatchlist';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { normalizeReportLanguage } from '../utils/reportLanguage';
-import type { MarketReviewPayload, StockBarItem } from '../types/analysis';
+import type { MarketReviewPayload, StockBarItem, TaskInfo } from '../types/analysis';
+import type { RunFlowSnapshotSource } from '../types/runFlow';
 
 type MarketReviewNotice = {
   variant: 'success' | 'warning' | 'danger';
@@ -28,8 +30,20 @@ type MarketReviewNotice = {
   message: string;
 } | null;
 
+type RunFlowDrawerState =
+  | { open: false }
+  | { open: true; source: RunFlowSnapshotSource; title: string };
+
+type StockAnalysisNavigationState = {
+  stockCode?: string;
+  stockName?: string;
+  autoAnalyze?: boolean;
+  selectionSource?: string;
+};
+
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { language: uiLanguage, t } = useUiLanguage();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
@@ -40,6 +54,7 @@ const HomePage: React.FC = () => {
   const [analysisSkills, setAnalysisSkills] = useState<SkillInfo[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState('');
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
+  const [runFlowDrawer, setRunFlowDrawer] = useState<RunFlowDrawerState>({ open: false });
   const marketReviewPollTimer = useRef<number | null>(null);
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
   const strategyMenuRef = useRef<HTMLDivElement | null>(null);
@@ -373,6 +388,20 @@ const HomePage: React.FC = () => {
     [query, selectedAnalysisSkills, submitAnalysis],
   );
 
+  useEffect(() => {
+    const state = location.state as StockAnalysisNavigationState | null;
+    const stockCode = typeof state?.stockCode === 'string' ? state.stockCode.trim() : '';
+    if (!stockCode) {
+      return;
+    }
+    const stockName = typeof state?.stockName === 'string' ? state.stockName.trim() : '';
+    setQuery(stockCode);
+    navigate(location.pathname, { replace: true, state: null });
+    if (state?.autoAnalyze) {
+      handleSubmitAnalysis(stockCode, stockName || undefined, 'import');
+    }
+  }, [handleSubmitAnalysis, location.pathname, location.state, navigate, setQuery]);
+
   const handleAskFollowUp = useCallback(() => {
     if (selectedReport?.meta.id === undefined || selectedReport.meta.reportType === 'market_review') {
       return;
@@ -398,6 +427,29 @@ const HomePage: React.FC = () => {
       skills: selectedAnalysisSkills,
     });
   }, [selectedAnalysisSkills, selectedReport, submitAnalysis]);
+
+  const openTaskRunFlow = useCallback((task: TaskInfo) => {
+    const stock = task.stockName || task.stockCode || task.taskId;
+    setRunFlowDrawer({
+      open: true,
+      source: { type: 'task', taskId: task.taskId },
+      title: t('runFlow.taskDrawerTitle', { stock }),
+    });
+  }, [t]);
+
+  const openHistoryRunFlow = useCallback((recordId: number) => {
+    const meta = selectedReport?.meta.id === recordId ? selectedReport.meta : null;
+    const stock = meta?.stockName || meta?.stockCode || String(recordId);
+    setRunFlowDrawer({
+      open: true,
+      source: { type: 'history', recordId },
+      title: t('runFlow.historyDrawerTitle', { stock }),
+    });
+  }, [selectedReport, t]);
+
+  const closeRunFlowDrawer = useCallback(() => {
+    setRunFlowDrawer({ open: false });
+  }, []);
 
   const pollMarketReviewStatus = useCallback(
     async (taskId: string) => {
@@ -575,7 +627,7 @@ const HomePage: React.FC = () => {
   const sidebarContent = useMemo(
     () => (
       <div className="flex min-h-0 h-full flex-col gap-3 overflow-hidden">
-        <TaskPanel tasks={activeTasks} />
+        <TaskPanel tasks={activeTasks} onOpenRunFlow={openTaskRunFlow} />
         <StockBar
           items={mergedStockBarItems}
           isLoading={isLoadingStockBar}
@@ -595,6 +647,7 @@ const HomePage: React.FC = () => {
       handleHistoryItemClick,
       handleDeleteStock,
       isDeletingStock,
+      openTaskRunFlow,
       selectedReport?.meta.stockCode,
       selectedReport?.meta.id,
     ],
@@ -926,6 +979,7 @@ const HomePage: React.FC = () => {
                   <ReportSummary
                     data={selectedReport}
                     isHistory
+                    onOpenRunFlow={openHistoryRunFlow}
                     watchlist={{
                       isInWatchlist: watchlistState.isInWatchlist,
                       onToggle: watchlistState.toggleWatchlist,
@@ -962,6 +1016,22 @@ const HomePage: React.FC = () => {
           reportLanguage={reportLanguage}
           onClose={closeMarkdownDrawer}
         />
+      ) : null}
+
+      {runFlowDrawer.open ? (
+        <Drawer
+          isOpen={runFlowDrawer.open}
+          onClose={closeRunFlowDrawer}
+          title={t('runFlow.drawerTitle')}
+          width="max-w-[96vw]"
+          zIndex={80}
+        >
+          <RunFlowPanel
+            key={`${runFlowDrawer.source.type}-${runFlowDrawer.source.type === 'task' ? runFlowDrawer.source.taskId : runFlowDrawer.source.recordId}`}
+            source={runFlowDrawer.source}
+            title={runFlowDrawer.title}
+          />
+        </Drawer>
       ) : null}
 
     </div>

@@ -187,6 +187,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
         snapshot = pipeline._build_context_snapshot(
             enhanced_context={
                 "code": "600519",
+                "daily_market_context_summary": "仅供prompt注入，不应入库存档",
                 "market_phase_context": _phase_payload(),
                 "portfolio_context": {
                     "quantity": 100,
@@ -201,6 +202,7 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
 
         self.assertNotIn("market_phase_context", snapshot["enhanced_context"])
         self.assertNotIn("portfolio_context", snapshot["enhanced_context"])
+        self.assertNotIn("daily_market_context_summary", snapshot["enhanced_context"])
         self.assertNotIn("avg_cost", str(snapshot))
 
     def test_agent_analysis_artifacts_helper_maps_initial_context_zero_fetch(self):
@@ -718,6 +720,164 @@ class PipelineMarketPhaseContextTestCase(unittest.TestCase):
             self.assertTrue(any(run.get("call_type") == "agent_analysis" for run in diagnostics["llm_runs"]))
         finally:
             reset_run_diagnostic_context(token)
+
+    def test_decision_signal_helper_uses_saved_history_id(self):
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.trace_id = "trace-helper"
+        pipeline.query_source = "api"
+        result = _analysis_result()
+        context_snapshot = {"market_phase_summary": _phase_payload()}
+
+        with patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract:
+            pipeline._extract_decision_signal_after_history_save(
+                result=result,
+                query_id="q-helper",
+                source_report_id=42,
+                report_type=ReportType.SIMPLE.value,
+                context_snapshot=context_snapshot,
+            )
+
+        pipeline.db.get_latest_analysis_history_id.assert_not_called()
+        mock_extract.assert_called_once()
+        self.assertIs(mock_extract.call_args.args[0], result)
+        kwargs = mock_extract.call_args.kwargs
+        self.assertIs(kwargs["context_snapshot"], context_snapshot)
+        self.assertEqual(kwargs["source_report_id"], 42)
+        self.assertEqual(kwargs["trace_id"], "trace-helper")
+        self.assertEqual(kwargs["query_source"], "api")
+        self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+
+    def test_decision_signal_helper_failure_does_not_raise(self):
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+
+        with patch(
+            "src.core.pipeline.extract_and_persist_from_analysis_result",
+            side_effect=RuntimeError("boom"),
+        ):
+            pipeline._extract_decision_signal_after_history_save(
+                result=_analysis_result(),
+                query_id="q-helper-fail",
+                source_report_id=42,
+                report_type=ReportType.SIMPLE.value,
+                context_snapshot={"market_phase_summary": _phase_payload()},
+            )
+
+    def test_legacy_pipeline_extracts_decision_signal_with_saved_history_id(self):
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.trace_id = "trace-runtime"
+        pipeline.query_source = "api"
+        pipeline.db.save_analysis_history.return_value = 42
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        with (
+            patch("src.core.pipeline.build_market_phase_context", return_value=phase_context),
+            patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract,
+        ):
+            result = pipeline.analyze_stock(
+                "600519",
+                ReportType.SIMPLE,
+                "q-runtime-signal",
+                current_time=datetime(2026, 3, 27, 10, 0),
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_called_once()
+        kwargs = mock_extract.call_args.kwargs
+        self.assertEqual(kwargs["source_report_id"], 42)
+        self.assertEqual(kwargs["trace_id"], "trace-runtime")
+        self.assertEqual(kwargs["query_source"], "api")
+        self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+
+    def test_legacy_pipeline_does_not_extract_when_history_save_fails(self):
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.db.save_analysis_history.return_value = 0
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        with (
+            patch("src.core.pipeline.build_market_phase_context", return_value=phase_context),
+            patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract,
+        ):
+            result = pipeline.analyze_stock(
+                "600519",
+                ReportType.SIMPLE,
+                "q-runtime-no-signal",
+                current_time=datetime(2026, 3, 27, 10, 0),
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_not_called()
+
+    def test_legacy_pipeline_extract_failure_does_not_mark_history_save_failed(self):
+        pipeline = _make_pipeline(agent_mode=False, save_context_snapshot=True)
+        pipeline.db.save_analysis_history.return_value = 42
+        phase_context = SimpleNamespace(to_dict=MagicMock(return_value=_phase_payload()))
+
+        with (
+            patch("src.core.pipeline.build_market_phase_context", return_value=phase_context),
+            patch(
+                "src.core.pipeline.extract_and_persist_from_analysis_result",
+                side_effect=RuntimeError("boom"),
+            ) as mock_extract,
+            patch("src.core.pipeline.record_history_run") as mock_record,
+        ):
+            result = pipeline.analyze_stock(
+                "600519",
+                ReportType.SIMPLE,
+                "q-runtime-extract-fail",
+                current_time=datetime(2026, 3, 27, 10, 0),
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_called_once()
+        self.assertEqual(mock_record.call_args.kwargs["analysis_history_id"], 42)
+        self.assertTrue(mock_record.call_args.kwargs["report_saved"])
+
+    def test_agent_pipeline_extracts_decision_signal_with_saved_history_id(self):
+        pipeline = _make_pipeline(agent_mode=True, save_context_snapshot=True)
+        pipeline.db.save_analysis_history.return_value = 84
+        pipeline._ensure_agent_history = MagicMock()
+        phase_payload = _phase_payload()
+
+        from src.agent.executor import AgentResult
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "贵州茅台",
+                "sentiment_score": 66,
+                "trend_prediction": "震荡",
+                "operation_advice": "持有",
+                "decision_type": "hold",
+            },
+            provider="test",
+        )
+        executor = MagicMock()
+        executor.run.return_value = agent_result
+
+        with (
+            patch("src.agent.factory.build_agent_executor", return_value=executor),
+            patch("src.core.pipeline.extract_and_persist_from_analysis_result") as mock_extract,
+        ):
+            result = pipeline._analyze_with_agent(
+                code="600519",
+                report_type=ReportType.SIMPLE,
+                query_id="q-agent-signal",
+                stock_name="贵州茅台",
+                realtime_quote=None,
+                chip_data=None,
+                fundamental_context={"market": "cn"},
+                trend_result=None,
+                market_phase_context=phase_payload,
+                market_phase_summary=phase_payload,
+            )
+
+        self.assertIsNotNone(result)
+        mock_extract.assert_called_once()
+        kwargs = mock_extract.call_args.kwargs
+        self.assertEqual(kwargs["source_report_id"], 84)
+        self.assertEqual(kwargs["report_type"], ReportType.SIMPLE.value)
+        self.assertIs(kwargs["context_snapshot"], pipeline.db.save_analysis_history.call_args.kwargs["context_snapshot"])
 
 
 if __name__ == "__main__":

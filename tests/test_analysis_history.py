@@ -36,6 +36,7 @@ except ModuleNotFoundError:
 from src.config import Config
 from src.storage import DatabaseManager, AnalysisHistory, BacktestResult, DecisionSignalRecord
 from src.analyzer import AnalysisResult
+from src.daily_market_context_guardrail import apply_daily_market_context_guardrail
 from src.services.history_service import HistoryService
 import src.auth as auth
 
@@ -149,12 +150,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             return row.id
 
     def test_save_analysis_history_with_snapshot(self) -> None:
@@ -181,7 +183,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             save_snapshot=True
         )
 
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         history = self.db.get_analysis_history(code="600519", days=7, limit=10)
         self.assertEqual(len(history), 1)
@@ -190,12 +192,82 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             row = session.query(AnalysisHistory).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             self.assertEqual(row.query_id, "query_001")
             self.assertIsNotNone(row.context_snapshot)
             self.assertEqual(row.ideal_buy, 125.5)
             self.assertEqual(row.secondary_buy, 120.0)
             self.assertEqual(row.stop_loss, 110.0)
             self.assertEqual(row.take_profit, 150.0)
+
+    def test_save_analysis_history_persists_sniper_columns_via_shared_parser(self) -> None:
+        """迁出 sniper parser 后历史狙击点位列仍按原规则保存。"""
+        result = self._build_result()
+        result.dashboard = {
+            "battle_plan": {
+                "sniper_points": {
+                    "ideal_buy": "理想买入点：125.5元",
+                    "secondary_buy": "1.52-1.53 (回踩MA5/10附近)",
+                    "stop_loss": "—",
+                    "take_profit": "目标位：150.0元",
+                }
+            }
+        }
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_shared_sniper_parser",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+
+        self.assertGreater(saved, 0)
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_shared_sniper_parser"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            self.assertEqual(row.ideal_buy, 125.5)
+            self.assertEqual(row.secondary_buy, 1.53)
+            self.assertIsNone(row.stop_loss)
+            self.assertEqual(row.take_profit, 150.0)
+
+    def test_get_latest_analysis_history_id_filters_by_report_type_and_latest_record(self) -> None:
+        """按 query/code/report_type 返回最新真实历史主键。"""
+        for report_type in ("simple", "full", "simple"):
+            saved = self.db.save_analysis_history(
+                result=self._build_result(),
+                query_id="query_latest_id",
+                report_type=report_type,
+                news_content="新闻摘要",
+                context_snapshot=None,
+                save_snapshot=False,
+            )
+            self.assertGreater(saved, 0)
+
+        simple_id = self.db.get_latest_analysis_history_id(
+            query_id="query_latest_id",
+            code="600519",
+            report_type="simple",
+        )
+        full_id = self.db.get_latest_analysis_history_id(
+            query_id="query_latest_id",
+            code="600519",
+            report_type="full",
+        )
+
+        self.assertIsNotNone(simple_id)
+        self.assertIsNotNone(full_id)
+        self.assertGreater(simple_id, full_id)
+
+    def test_get_latest_analysis_history_id_requires_report_type(self) -> None:
+        """report_type 是必传参数，避免误取同 query/code 的其他报告。"""
+        with self.assertRaises(TypeError):
+            self.db.get_latest_analysis_history_id(query_id="query", code="600519")
 
     def test_save_analysis_history_without_snapshot(self) -> None:
         """关闭快照保存时不写入 context_snapshot"""
@@ -210,12 +282,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             save_snapshot=False
         )
 
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             self.assertIsNone(row.context_snapshot)
 
     def test_save_analysis_history_persists_model_used(self) -> None:
@@ -231,12 +304,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_003").first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             payload = json.loads(row.raw_result or "{}")
             self.assertEqual(payload.get("model_used"), "gemini/gemini-2.0-flash")
 
@@ -258,7 +332,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             },
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         updated = self.db.update_analysis_history_diagnostics(
             query_id="query_diag_patch",
@@ -279,6 +353,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             snapshot = json.loads(row.context_snapshot or "{}")
             self.assertEqual(snapshot["enhanced_context"]["code"], "600519")
             notification_run = snapshot["diagnostics"]["notification_runs"][-1]
@@ -298,12 +373,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_004").first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         service = HistoryService(self.db)
@@ -335,7 +411,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         service = HistoryService(self.db)
         payload = service.get_history_list(stock_code="600519.SH", page=1, limit=5)
@@ -356,6 +432,49 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(item["market_phase_summary"]["phase"], "intraday")
         self.assertEqual(item["market_phase_summary"]["minutes_to_close"], 300)
 
+    def test_history_persistence_keeps_softened_operation_advice_from_guardrail(self) -> None:
+        """Conservative-market guardrail short operation_advice is persisted and exposed to history list."""
+        result = self._build_result()
+        result.decision_type = "buy"
+        result.operation_advice = "立即买入并积极加仓"
+
+        apply_daily_market_context_guardrail(
+            result,
+            daily_market_context={
+                "region": "cn",
+                "trade_date": "2026-06-06",
+                "summary": "大盘退潮，高风险，建议观望，仓位上限30%。",
+                "risk_tags": ["high_risk", "low_position_cap"],
+            },
+            report_language="zh",
+        )
+
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id="query_softened_operation_advice",
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertGreater(saved, 0)
+
+        service = HistoryService(self.db)
+        payload = service.get_history_list(stock_code="600519", page=1, limit=10)
+
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["operation_advice"], "观望")
+        self.assertLessEqual(len(payload["items"][0]["operation_advice"]), 20)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(
+                AnalysisHistory.query_id == "query_softened_operation_advice"
+            ).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
+            self.assertEqual(row.operation_advice, "观望")
+
     def test_market_review_history_can_be_filtered_without_stock_records(self) -> None:
         """Market review records should be queryable as a dedicated history collection."""
         stock_result = self._build_result()
@@ -368,7 +487,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             analysis_summary="大盘复盘摘要",
         )
 
-        self.assertEqual(
+        self.assertGreater(
             self.db.save_analysis_history(
                 result=stock_result,
                 query_id="query_stock_history",
@@ -377,9 +496,9 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             ),
-            1,
+            0,
         )
-        self.assertEqual(
+        self.assertGreater(
             self.db.save_analysis_history(
                 result=market_result,
                 query_id="query_market_review_history",
@@ -394,7 +513,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 },
                 save_snapshot=True,
             ),
-            1,
+            0,
         )
 
         service = HistoryService(self.db)
@@ -423,7 +542,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             analysis_summary="大盘复盘摘要",
         )
 
-        self.assertEqual(
+        self.assertGreater(
             self.db.save_analysis_history(
                 result=stock_result,
                 query_id="query_stock_bar_stock",
@@ -432,9 +551,9 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             ),
-            1,
+            0,
         )
-        self.assertEqual(
+        self.assertGreater(
             self.db.save_analysis_history(
                 result=market_result,
                 query_id="query_stock_bar_market",
@@ -443,7 +562,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             ),
-            1,
+            0,
         )
 
         records = self.db.get_distinct_stocks_from_history(limit=10)
@@ -465,7 +584,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         response = get_stock_bar(
             start_date=None,
@@ -528,7 +647,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             )
-            self.assertEqual(saved, 1)
+            self.assertGreater(saved, 0)
 
         save_record("600519.SH", "query_cn_suffix")
         save_record("600519", "query_cn_plain")
@@ -581,7 +700,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             )
-            self.assertEqual(saved, 1)
+            self.assertGreater(saved, 0)
 
         save_record("1810.HK", "query_hk_unpadded")
         save_record("01810.HK", "query_hk_padded")
@@ -617,7 +736,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                 context_snapshot=None,
                 save_snapshot=False,
             )
-            self.assertEqual(saved, 1)
+            self.assertGreater(saved, 0)
 
         save_record("600519.SH", "query_cn_sh")
         save_record("600519.SS", "query_cn_ss")
@@ -661,12 +780,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -698,12 +818,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -731,12 +852,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         static_dir = Path(self._temp_dir.name) / "empty-static"
@@ -762,12 +884,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_005").first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             row.raw_result = {"model_used": "unknown", "extra": "v"}
 
             service = HistoryService(self.db)
@@ -799,12 +922,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_006").first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         service = HistoryService(self.db)
@@ -826,7 +950,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == "query_007").first()
@@ -838,6 +962,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             row.take_profit = 150.0
             row.raw_result = json.dumps({"model_used": "gemini/gemini-2.0-flash"})
             session.commit()
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         service = HistoryService(self.db)
@@ -863,7 +988,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         self.db.save_fundamental_snapshot(
             query_id=query_id,
@@ -889,6 +1014,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -911,7 +1037,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         fallback_fundamental = {
             "belong_boards": [{"name": "白酒", "type": "行业"}],
@@ -925,12 +1051,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             code="600519",
             payload=fallback_fundamental,
         )
-        self.assertEqual(saved_snapshot, 1)
+        self.assertGreater(saved_snapshot, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -951,12 +1078,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -986,12 +1114,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -1027,12 +1156,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=context_snapshot,
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -1064,12 +1194,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             },
             save_snapshot=True,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -1111,12 +1242,13 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             },
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
             self.assertIsNone(row.context_snapshot)
 
@@ -1164,7 +1296,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1172,6 +1304,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         markdown = HistoryService(self.db).get_markdown_report(str(record_id))
@@ -1202,7 +1335,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1210,6 +1343,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         markdown = HistoryService(self.db).get_markdown_report(str(record_id))
@@ -1244,7 +1378,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1252,6 +1386,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         markdown = HistoryService(self.db).get_markdown_report(str(record_id))
@@ -1284,7 +1419,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1292,6 +1427,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -1325,7 +1461,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1333,6 +1469,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         report = get_history_detail(str(record_id), db_manager=self.db)
@@ -1379,7 +1516,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             context_snapshot=None,
             save_snapshot=False,
         )
-        self.assertEqual(saved, 1)
+        self.assertGreater(saved, 0)
 
         with self.db.get_session() as session:
             row = session.query(AnalysisHistory).filter(
@@ -1387,6 +1524,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             ).first()
             if row is None:
                 self.fail("未找到保存的历史记录")
+            self.assertEqual(row.id, saved)
             record_id = row.id
 
         markdown = HistoryService(self.db).get_markdown_report(str(record_id))

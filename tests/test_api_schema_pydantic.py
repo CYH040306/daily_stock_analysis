@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from api.app import create_app
+from api.v1.router import router as api_v1_router
 from api.v1.schemas.analysis import AnalyzeRequest, MarketReviewRequest
 from api.v1.schemas.common import RootResponse
 from api.v1.schemas.history import HistoryItem
@@ -107,3 +108,13 @@ def test_decision_signal_static_api_spec_matches_runtime_paths() -> None:
 
     status_schema = static_spec["components"]["schemas"]["DecisionSignalStatusUpdateRequest"]["properties"]["status"]
     assert status_schema["enum"] == ["active", "expired", "invalidated", "closed", "archived"]
+
+
+def test_v1_prefix_is_applied_at_app_mount_level() -> None:
+    assert api_v1_router.prefix == ""
+
+    runtime_paths = create_app().openapi()["paths"]
+    assert "/api/v1/history" in runtime_paths
+    assert "/api/v1/decision-signals" in runtime_paths
+    assert "/api/v1/history/" not in runtime_paths
+    assert "/api/v1/decision-signals/" not in runtime_paths

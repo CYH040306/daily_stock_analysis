@@ -711,7 +711,7 @@ describe('stockPoolStore', () => {
     await useStockPoolStore.getState().refreshActiveTasks();
 
     expect(analysisApi.getTasks).toHaveBeenCalledWith({
-      status: 'pending,processing',
+      status: 'pending,processing,cancel_requested',
       limit: 100,
     });
     expect(useStockPoolStore.getState().activeTasks).toHaveLength(0);
@@ -811,6 +811,24 @@ describe('stockPoolStore', () => {
     await useStockPoolStore.getState().refreshActiveTasks();
 
     expect(useStockPoolStore.getState().activeTasks).toEqual([localTask, remoteTask]);
+  });
+
+  it('prunes stale local tasks when a complete backend snapshot contains cancel-requested tasks', async () => {
+    const staleTask = createTask({ taskId: 'task-stale', status: 'processing' });
+    const cancelRequestedTask = createTask({
+      taskId: 'task-cancel-requested',
+      status: 'cancel_requested',
+      progress: 60,
+      message: '正在取消任务',
+    });
+    useStockPoolStore.getState().syncTaskCreated(staleTask);
+    vi.mocked(analysisApi.getTasks).mockResolvedValue(
+      createTaskListResponse([cancelRequestedTask]),
+    );
+
+    await useStockPoolStore.getState().refreshActiveTasks();
+
+    expect(useStockPoolStore.getState().activeTasks).toEqual([cancelRequestedTask]);
   });
 
   it('keeps active tasks unchanged when backend reconciliation fails', async () => {

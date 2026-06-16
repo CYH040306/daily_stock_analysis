@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, get_args
 
 from data_provider.base import canonical_stock_code, normalize_stock_code
@@ -32,6 +32,20 @@ HORIZONS = frozenset({"intraday", "1d", "3d", "5d", "10d", "swing", "long"})
 MARKET_PHASES = frozenset(phase.value for phase in MarketPhase)
 DECISION_ACTIONS = frozenset(get_args(DecisionAction))
 REDACTION_MARKERS = ("[REDACTED]", "[REDACTED_URL]")
+TERMINAL_STATUSES = frozenset({"expired", "invalidated", "closed", "archived"})
+BULLISH_ACTIONS = frozenset({"buy", "add"})
+DEFENSIVE_ACTIONS = frozenset({"reduce", "sell", "avoid"})
+INTRADAY_PHASES = frozenset({
+    MarketPhase.PREMARKET.value,
+    MarketPhase.INTRADAY.value,
+    MarketPhase.LUNCH_BREAK.value,
+    MarketPhase.CLOSING_AUCTION.value,
+})
+DEFAULT_INTRADAY_TTL_HOURS = {
+    "cn": 4.0,
+    "hk": 5.5,
+    "us": 6.5,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +71,18 @@ class DecisionSignalService:
         self.portfolio_repo = portfolio_repo or PortfolioRepository(db_manager)
 
     def create_signal(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        fields = self._normalize_payload(payload)
-        row, created = self.repo.create_if_absent(fields)
-        return {"item": self._serialize(row), "created": created}
+        fields, lifecycle = self._normalize_payload(payload)
+        result = self.repo.create_if_absent(
+            fields,
+            allow_relaxed_horizon_fill=lifecycle["horizon_defaulted"],
+        )
+        # Active duplicates can be retries after a prior partial create; rerun invalidation to repair old opposing signals.
+        if result.row.status == "active":
+            self._invalidate_opposing_active_signals(
+                result.row,
+                reference_at=result.invalidation_reference_at,
+            )
+        return {"item": self._serialize(result.row), "created": result.created}
 
     def get_signal(self, signal_id: int) -> Dict[str, Any]:
         row = self.repo.get(signal_id)
@@ -182,9 +205,9 @@ class DecisionSignalService:
         if existing is None:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
         if status_norm == "active" and (
-            existing.status == "expired" or self._is_expired(existing.expires_at)
+            existing.status in TERMINAL_STATUSES or self._is_expired(existing.expires_at)
         ):
-            raise ValueError("expired decision signal cannot be reactivated without extending expires_at")
+            raise ValueError("terminal decision signal cannot be reactivated through status update")
         row = self.repo.update_status(
             signal_id,
             status=status_norm,
@@ -195,7 +218,7 @@ class DecisionSignalService:
             raise DecisionSignalNotFoundError(f"Decision signal not found: {signal_id}")
         return self._serialize(row)
 
-    def _normalize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_payload(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         market = self._normalize_market(payload.get("market"))
         stock_code = self._normalize_stock_code(payload.get("stock_code"), market=market)
         action = self._normalize_action(payload.get("action"))
@@ -211,6 +234,22 @@ class DecisionSignalService:
         if score is not None and not 0 <= score <= 100:
             raise ValueError("score must be between 0 and 100")
 
+        market_phase = self._normalize_optional_enum(payload.get("market_phase"), MARKET_PHASES, "market_phase")
+        horizon_explicit = self._payload_has_value(payload, "horizon")
+        horizon = self._normalize_optional_enum(payload.get("horizon"), HORIZONS, "horizon")
+        horizon_defaulted = False
+        if horizon is None:
+            horizon = self._default_horizon(action=action, market_phase=market_phase)
+            horizon_defaulted = horizon is not None and not horizon_explicit
+        expires_explicit = self._payload_has_value(payload, "expires_at")
+        expires_at = self._parse_datetime(payload.get("expires_at"))
+        if expires_at is None and not expires_explicit:
+            expires_at = self._default_expires_at(
+                horizon=horizon,
+                market=market,
+                metadata=payload.get("metadata"),
+            )
+
         fields: Dict[str, Any] = {
             "stock_code": stock_code,
             "stock_name": self._optional_public_text(payload.get("stock_name"), "stock_name", max_length=64),
@@ -219,13 +258,13 @@ class DecisionSignalService:
             "source_agent": self._optional_public_text(payload.get("source_agent"), "source_agent", max_length=64),
             "source_report_id": self._optional_int(payload.get("source_report_id"), "source_report_id"),
             "trace_id": self._optional_identity_text(payload.get("trace_id"), "trace_id", max_length=64),
-            "market_phase": self._normalize_optional_enum(payload.get("market_phase"), MARKET_PHASES, "market_phase"),
+            "market_phase": market_phase,
             "trigger_source": self._normalize_trigger_source(payload.get("trigger_source")),
             "action": action,
             "action_label": action_label,
             "confidence": confidence,
             "score": score,
-            "horizon": self._normalize_optional_enum(payload.get("horizon"), HORIZONS, "horizon"),
+            "horizon": horizon,
             "entry_low": self._optional_price_float(payload.get("entry_low"), "entry_low"),
             "entry_high": self._optional_price_float(payload.get("entry_high"), "entry_high"),
             "stop_loss": self._optional_price_float(payload.get("stop_loss"), "stop_loss"),
@@ -238,7 +277,7 @@ class DecisionSignalService:
             "evidence_json": self._json_dumps(payload.get("evidence")),
             "data_quality_summary_json": self._json_dumps(payload.get("data_quality_summary")),
             "status": self._normalize_optional_enum(payload.get("status"), SIGNAL_STATUSES, "status") or "active",
-            "expires_at": self._parse_datetime(payload.get("expires_at")),
+            "expires_at": expires_at,
             "metadata_json": self._json_dumps(payload.get("metadata")),
         }
         if fields["status"] == "active" and self._is_expired(fields["expires_at"]):
@@ -248,7 +287,157 @@ class DecisionSignalService:
             payload.get("plan_quality"),
             fields=fields,
         )
-        return fields
+        return fields, {"horizon_defaulted": horizon_defaulted}
+
+    @staticmethod
+    def _payload_has_value(payload: Dict[str, Any], field_name: str) -> bool:
+        return payload.get(field_name) not in (None, "")
+
+    @staticmethod
+    def _default_horizon(*, action: str, market_phase: Optional[str]) -> str:
+        if action == "alert" or market_phase in INTRADAY_PHASES:
+            return "intraday"
+        return "3d"
+
+    @classmethod
+    def _default_expires_at(
+        cls,
+        *,
+        horizon: Optional[str],
+        market: str,
+        metadata: Any,
+    ) -> Optional[datetime]:
+        now = utc_naive_now()
+        if horizon == "intraday":
+            minutes_to_close = cls._metadata_minutes(metadata, "minutes_to_close")
+            if minutes_to_close is not None:
+                return now + timedelta(minutes=minutes_to_close)
+            minutes_to_open = cls._metadata_minutes(metadata, "minutes_to_open")
+            if minutes_to_open is not None:
+                fallback_minutes = int(cls._intraday_fallback_hours(market) * 60)
+                return now + timedelta(minutes=minutes_to_open + fallback_minutes)
+            return now + timedelta(hours=cls._intraday_fallback_hours(market))
+
+        days = cls._horizon_days(horizon)
+        if days is None:
+            return None
+        return now + timedelta(days=days)
+
+    @staticmethod
+    def _intraday_fallback_hours(market: str) -> float:
+        return DEFAULT_INTRADAY_TTL_HOURS.get(market, 4.0)
+
+    @staticmethod
+    def _horizon_days(horizon: Optional[str]) -> Optional[int]:
+        if horizon in {"1d", "3d", "5d", "10d"}:
+            return int(horizon[:-1])
+        return None
+
+    @classmethod
+    def _metadata_minutes(cls, metadata: Any, field_name: str) -> Optional[int]:
+        if not isinstance(metadata, dict):
+            return None
+        summary = metadata.get("market_phase_summary")
+        if not isinstance(summary, dict):
+            return None
+        value = summary.get(field_name)
+        if value in (None, ""):
+            return None
+        try:
+            minutes = int(float(value))
+        except (TypeError, ValueError):
+            return None
+        return minutes if minutes >= 0 else None
+
+    def _invalidate_opposing_active_signals(
+        self,
+        row: DecisionSignalRecord,
+        *,
+        reference_at: Optional[datetime],
+    ) -> None:
+        opposing_actions = self._opposing_actions(row.action)
+        if not opposing_actions:
+            return
+        old_rows = self.repo.list_active_by_stock_actions(
+            market=row.market,
+            stock_code=row.stock_code,
+            actions=sorted(opposing_actions),
+            exclude_signal_id=row.id,
+        )
+        for old_row in old_rows:
+            if not self._is_prior_signal(old_row, row, reference_at=reference_at):
+                continue
+            metadata_json = self._invalidation_metadata_json(old_row, invalidated_by=row)
+            updated = self.repo.update_status(
+                old_row.id,
+                status="invalidated",
+                metadata_json=metadata_json,
+                replace_metadata=True,
+            )
+            if updated is None:
+                logger.warning(
+                    "Decision signal disappeared before invalidation: signal_id=%s invalidated_by=%s",
+                    old_row.id,
+                    row.id,
+                )
+
+    @staticmethod
+    def _is_prior_signal(
+        candidate: DecisionSignalRecord,
+        current: DecisionSignalRecord,
+        *,
+        reference_at: Optional[datetime],
+    ) -> bool:
+        candidate_created_at = candidate.created_at
+        if candidate_created_at is not None and reference_at is not None:
+            candidate_created_at = to_utc_naive_datetime(candidate_created_at)
+            reference_at = to_utc_naive_datetime(reference_at)
+            if candidate_created_at != reference_at:
+                return candidate_created_at < reference_at
+
+        if candidate.id is not None and current.id is not None:
+            return candidate.id < current.id
+        return False
+
+    @staticmethod
+    def _opposing_actions(action: str) -> frozenset[str]:
+        if action in BULLISH_ACTIONS:
+            return DEFENSIVE_ACTIONS
+        if action in DEFENSIVE_ACTIONS:
+            return BULLISH_ACTIONS
+        return frozenset()
+
+    def _invalidation_metadata_json(
+        self,
+        row: DecisionSignalRecord,
+        *,
+        invalidated_by: DecisionSignalRecord,
+    ) -> Optional[str]:
+        metadata = self._metadata_for_invalidation(row)
+        metadata.update({
+            "invalidated_by_signal_id": invalidated_by.id,
+            "invalidated_reason": f"opposite_active_signal:{row.action}->{invalidated_by.action}",
+            "invalidated_at": utc_naive_now().isoformat(),
+            "previous_status": row.status,
+        })
+        return self._json_dumps(metadata)
+
+    @staticmethod
+    def _metadata_for_invalidation(row: DecisionSignalRecord) -> Dict[str, Any]:
+        if not row.metadata_json:
+            return {}
+        try:
+            value = json.loads(row.metadata_json)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "Replacing invalid decision signal metadata during invalidation: id=%s error=%s",
+                row.id,
+                exc,
+            )
+            return {"metadata_replaced_due_to_invalid_json": True}
+        if isinstance(value, dict):
+            return dict(value)
+        return {"metadata_replaced_due_to_non_object": True}
 
     def _normalize_plan_quality(self, value: Any, *, fields: Dict[str, Any]) -> str:
         if value is not None:

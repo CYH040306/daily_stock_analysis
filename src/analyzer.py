@@ -57,6 +57,7 @@ from src.report_language import (
 from src.schemas.decision_action import build_action_fields
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import get_market_role, get_market_guidelines
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 from src.market_phase_prompt import format_market_phase_prompt_section
 
 logger = logging.getLogger(__name__)
@@ -2975,6 +2976,12 @@ class GeminiAnalyzer:
             context.get("market_phase_context"),
             report_language=report_language,
         )
+        daily_market_context_section = format_daily_market_context_prompt_section(
+            context.get("daily_market_context"),
+            report_language=report_language,
+        )
+        if daily_market_context_section:
+            prompt += daily_market_context_section
         if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:
             prompt += analysis_context_pack_summary
         prompt += f"""

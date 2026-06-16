@@ -31,6 +31,7 @@ from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
 from src.market_phase_prompt import format_market_phase_prompt_section
+from src.services.daily_market_context import format_daily_market_context_prompt_section
 
 logger = logging.getLogger(__name__)
 
@@ -617,6 +618,12 @@ class AgentExecutor:
                 strategy = context["previous_strategy"]
                 strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
                 context_parts.append(f"上次策略分析:\n{strategy_text}")
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                context_parts.append(daily_market_context_section.strip())
             if context_parts:
                 context_msg = "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts)
                 messages.append({"role": "user", "content": context_msg})
@@ -802,6 +809,13 @@ class AgentExecutor:
             )
             if market_phase_section:
                 parts.append(market_phase_section)
+
+            daily_market_context_section = format_daily_market_context_prompt_section(
+                context.get("daily_market_context"),
+                report_language=report_language,
+            )
+            if daily_market_context_section:
+                parts.append(daily_market_context_section)
 
             analysis_context_pack_summary = context.get("analysis_context_pack_summary")
             if isinstance(analysis_context_pack_summary, str) and analysis_context_pack_summary:

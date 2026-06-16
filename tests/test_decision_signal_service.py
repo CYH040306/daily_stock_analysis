@@ -6,14 +6,17 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from math import inf, nan
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.config import Config
+from src.repositories.decision_signal_repo import DecisionSignalCreateResult
 from src.services.decision_signal_service import DecisionSignalService, DecisionSignalStorageError
-from src.storage import DatabaseManager, DecisionSignalRecord
+from src.storage import DatabaseManager, DecisionSignalRecord, utc_naive_now
 from src.utils.sanitize import sanitize_decision_signal_text, sanitize_diagnostic_text
 
 
@@ -96,6 +99,114 @@ def test_service_normalizes_fields_and_partial_plan_quality(isolated_db) -> None
     assert item["entry_low"] == 1680.5
     assert item["stop_loss"] == 1600.0
     assert item["plan_quality"] == "partial"
+
+
+def test_service_defaults_lifecycle_and_preserves_explicit_values(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+
+    intraday_payload = _payload(
+        source_report_id=151,
+        trace_id="trace-lifecycle-intraday",
+        market_phase="intraday",
+        metadata={"market_phase_summary": {"minutes_to_close": 45}},
+    )
+    intraday_payload.pop("horizon")
+    before_intraday = utc_naive_now()
+    intraday = service.create_signal(intraday_payload)["item"]
+    intraday_expiry = datetime.fromisoformat(intraday["expires_at"])
+    assert intraday["horizon"] == "intraday"
+    assert before_intraday + timedelta(minutes=44) <= intraday_expiry
+    assert intraday_expiry <= utc_naive_now() + timedelta(minutes=46)
+
+    opening_payload = _payload(
+        source_report_id=157,
+        trace_id="trace-lifecycle-opening",
+        market_phase="premarket",
+        metadata={"market_phase_summary": {"minutes_to_open": 10}},
+    )
+    opening_payload.pop("horizon")
+    before_opening = utc_naive_now()
+    opening = service.create_signal(opening_payload)["item"]
+    opening_expiry = datetime.fromisoformat(opening["expires_at"])
+    assert opening["horizon"] == "intraday"
+    assert before_opening + timedelta(hours=4, minutes=9) <= opening_expiry
+    assert opening_expiry <= utc_naive_now() + timedelta(hours=4, minutes=11)
+
+    hk_alert_payload = _payload(
+        source_report_id=152,
+        trace_id="trace-lifecycle-hk-alert",
+        stock_code="00700",
+        stock_name="Tencent",
+        market="hk",
+        action="alert",
+    )
+    hk_alert_payload.pop("horizon")
+    hk_alert_payload.pop("market_phase")
+    before_alert = utc_naive_now()
+    hk_alert = service.create_signal(hk_alert_payload)["item"]
+    hk_alert_expiry = datetime.fromisoformat(hk_alert["expires_at"])
+    assert hk_alert["horizon"] == "intraday"
+    assert before_alert + timedelta(hours=5, minutes=29) <= hk_alert_expiry
+    assert hk_alert_expiry <= utc_naive_now() + timedelta(hours=5, minutes=31)
+
+    postmarket_payload = _payload(
+        source_report_id=153,
+        trace_id="trace-lifecycle-postmarket",
+        market_phase="postmarket",
+    )
+    postmarket_payload.pop("horizon")
+    before_postmarket = utc_naive_now()
+    postmarket = service.create_signal(postmarket_payload)["item"]
+    postmarket_expiry = datetime.fromisoformat(postmarket["expires_at"])
+    assert postmarket["horizon"] == "3d"
+    assert before_postmarket + timedelta(days=3, seconds=-1) <= postmarket_expiry
+    assert postmarket_expiry <= utc_naive_now() + timedelta(days=3, seconds=1)
+
+    null_lifecycle_payload = _payload(
+        source_report_id=158,
+        trace_id="trace-lifecycle-null-values",
+        horizon=None,
+        expires_at=None,
+        market_phase="intraday",
+        metadata={"market_phase_summary": {"minutes_to_close": 30}},
+    )
+    before_null_lifecycle = utc_naive_now()
+    null_lifecycle = service.create_signal(null_lifecycle_payload)["item"]
+    null_lifecycle_expiry = datetime.fromisoformat(null_lifecycle["expires_at"])
+    assert null_lifecycle["horizon"] == "intraday"
+    assert before_null_lifecycle + timedelta(minutes=29) <= null_lifecycle_expiry
+    assert null_lifecycle_expiry <= utc_naive_now() + timedelta(minutes=31)
+
+    swing = service.create_signal(
+        _payload(
+            source_report_id=154,
+            trace_id="trace-lifecycle-swing",
+            horizon="swing",
+        )
+    )["item"]
+    assert swing["horizon"] == "swing"
+    assert swing["expires_at"] is None
+
+    explicit_expires_at = "2099-01-01T00:00:00Z"
+    explicit = service.create_signal(
+        _payload(
+            source_report_id=155,
+            trace_id="trace-lifecycle-explicit",
+            horizon="1d",
+            expires_at=explicit_expires_at,
+        )
+    )["item"]
+    assert explicit["horizon"] == "1d"
+    assert explicit["expires_at"] == "2099-01-01T00:00:00"
+
+    past = service.create_signal(
+        _payload(
+            source_report_id=156,
+            trace_id="trace-lifecycle-past",
+            expires_at=(utc_naive_now() - timedelta(minutes=1)).isoformat(),
+        )
+    )["item"]
+    assert past["status"] == "expired"
 
 
 def test_service_plan_quality_slots_and_explicit_override(isolated_db) -> None:
@@ -475,3 +586,238 @@ def test_service_raises_on_corrupt_persisted_json(isolated_db) -> None:
 
     with pytest.raises(DecisionSignalStorageError, match="invalid persisted JSON"):
         service.get_signal(signal_id)
+
+
+@pytest.mark.parametrize("terminal_status", ["expired", "invalidated", "closed", "archived"])
+def test_service_rejects_terminal_status_reactivation(isolated_db, terminal_status) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    created = service.create_signal(
+        _payload(source_report_id=360, trace_id=f"trace-terminal-{terminal_status}")
+    )
+    signal_id = created["item"]["id"]
+
+    service.update_status(signal_id, status=terminal_status)
+
+    with pytest.raises(ValueError, match="terminal decision signal"):
+        service.update_status(signal_id, status="active")
+
+
+def test_service_invalidates_opposing_active_signals(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_buy = service.create_signal(
+        _payload(
+            source_report_id=371,
+            trace_id="trace-opposing-buy",
+            action="buy",
+            metadata={"task_id": "old-buy"},
+        )
+    )["item"]
+
+    new_sell = service.create_signal(
+        _payload(
+            source_report_id=372,
+            trace_id="trace-opposing-sell",
+            action="sell",
+        )
+    )["item"]
+
+    old_after = service.get_signal(old_buy["id"])
+    assert new_sell["status"] == "active"
+    assert old_after["status"] == "invalidated"
+    assert old_after["metadata"]["task_id"] == "old-buy"
+    assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
+    assert old_after["metadata"]["invalidated_reason"] == "opposite_active_signal:buy->sell"
+    assert old_after["metadata"]["previous_status"] == "active"
+
+    latest = service.get_latest_active(stock_code="600519", limit=5)
+    assert [item["id"] for item in latest["items"]] == [new_sell["id"]]
+
+
+def test_service_expired_refresh_invalidates_later_opposing_active_signal(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    buy_payload = _payload(source_report_id=376, trace_id="trace-refresh-buy", action="buy")
+    old_buy = service.create_signal(buy_payload)["item"]
+    service.update_status(old_buy["id"], status="expired")
+
+    active_sell = service.create_signal(
+        _payload(source_report_id=377, trace_id="trace-refresh-sell", action="sell")
+    )["item"]
+    assert service.get_signal(active_sell["id"])["status"] == "active"
+
+    refreshed = service.create_signal(
+        {
+            **buy_payload,
+            "expires_at": (utc_naive_now() + timedelta(days=1)).isoformat(),
+        }
+    )
+
+    assert refreshed["created"] is False
+    assert refreshed["item"]["id"] == old_buy["id"]
+    assert refreshed["item"]["status"] == "active"
+    sell_after = service.get_signal(active_sell["id"])
+    assert sell_after["status"] == "invalidated"
+    assert sell_after["metadata"]["invalidated_by_signal_id"] == old_buy["id"]
+    latest = service.get_latest_active(stock_code="600519", limit=5)
+    assert [item["id"] for item in latest["items"]] == [old_buy["id"]]
+
+
+def test_service_does_not_invalidate_neutral_or_terminal_signals(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_buy = service.create_signal(
+        _payload(source_report_id=381, trace_id="trace-neutral-buy", action="buy")
+    )["item"]
+
+    hold = service.create_signal(
+        _payload(source_report_id=382, trace_id="trace-neutral-hold", action="hold")
+    )["item"]
+
+    assert hold["status"] == "active"
+    assert service.get_signal(old_buy["id"])["status"] == "active"
+
+    service.update_status(old_buy["id"], status="closed")
+    service.create_signal(
+        _payload(source_report_id=383, trace_id="trace-terminal-sell", action="sell")
+    )
+    assert service.get_signal(old_buy["id"])["status"] == "closed"
+
+
+def test_service_replaces_corrupt_metadata_during_invalidation(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_buy = service.create_signal(
+        _payload(source_report_id=391, trace_id="trace-corrupt-metadata-buy", action="buy")
+    )["item"]
+
+    with isolated_db.get_session() as session:
+        row = session.query(DecisionSignalRecord).filter_by(id=old_buy["id"]).one()
+        row.metadata_json = "{not valid json"
+        session.commit()
+
+    new_sell = service.create_signal(
+        _payload(source_report_id=392, trace_id="trace-corrupt-metadata-sell", action="sell")
+    )["item"]
+
+    old_after = service.get_signal(old_buy["id"])
+    assert old_after["status"] == "invalidated"
+    assert old_after["metadata"]["metadata_replaced_due_to_invalid_json"] is True
+    assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
+
+
+def test_service_replaces_non_object_metadata_during_invalidation(isolated_db) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_buy = service.create_signal(
+        _payload(source_report_id=393, trace_id="trace-non-object-metadata-buy", action="buy")
+    )["item"]
+
+    with isolated_db.get_session() as session:
+        row = session.query(DecisionSignalRecord).filter_by(id=old_buy["id"]).one()
+        row.metadata_json = '["legacy"]'
+        session.commit()
+
+    new_sell = service.create_signal(
+        _payload(source_report_id=394, trace_id="trace-non-object-metadata-sell", action="sell")
+    )["item"]
+
+    old_after = service.get_signal(old_buy["id"])
+    assert old_after["status"] == "invalidated"
+    assert old_after["metadata"]["metadata_replaced_due_to_non_object"] is True
+    assert old_after["metadata"]["invalidated_by_signal_id"] == new_sell["id"]
+
+
+def test_service_duplicate_retry_repairs_failed_invalidation(isolated_db, monkeypatch) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    old_buy = service.create_signal(
+        _payload(source_report_id=392, trace_id="trace-repair-buy", action="buy")
+    )["item"]
+    sell_payload = _payload(source_report_id=393, trace_id="trace-repair-sell", action="sell")
+    original_update_status = service.repo.update_status
+
+    def fail_once(*_args, **_kwargs):
+        raise RuntimeError("invalidation write failed")
+
+    monkeypatch.setattr(service.repo, "update_status", fail_once)
+    with pytest.raises(RuntimeError, match="invalidation write failed"):
+        service.create_signal(sell_payload)
+
+    assert service.get_signal(old_buy["id"])["status"] == "active"
+
+    monkeypatch.setattr(service.repo, "update_status", original_update_status)
+    retried = service.create_signal(sell_payload)
+
+    assert retried["created"] is False
+    assert retried["item"]["status"] == "active"
+    old_after = service.get_signal(old_buy["id"])
+    assert old_after["status"] == "invalidated"
+    assert old_after["metadata"]["invalidated_by_signal_id"] == retried["item"]["id"]
+
+
+def test_service_duplicate_old_signal_does_not_invalidate_newer_opposing_signal(isolated_db, monkeypatch) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    buy_payload = _payload(source_report_id=395, trace_id="trace-old-replay-buy", action="buy")
+    old_buy = service.create_signal(buy_payload)["item"]
+
+    monkeypatch.setattr(service, "_invalidate_opposing_active_signals", lambda *_args, **_kwargs: None)
+    new_sell = service.create_signal(
+        _payload(source_report_id=396, trace_id="trace-old-replay-sell", action="sell")
+    )["item"]
+    monkeypatch.undo()
+
+    replayed_buy = service.create_signal(buy_payload)
+
+    assert replayed_buy["created"] is False
+    assert replayed_buy["item"]["id"] == old_buy["id"]
+    assert service.get_signal(new_sell["id"])["status"] == "active"
+    assert service.get_signal(old_buy["id"])["status"] == "active"
+
+
+def test_service_relaxed_active_fill_does_not_invalidate_newer_opposing_signal(isolated_db, monkeypatch) -> None:
+    service = DecisionSignalService(db_manager=isolated_db)
+    buy_payload = _payload(source_report_id=397, trace_id="trace-relaxed-fill-buy", action="buy")
+    old_buy = service.create_signal(buy_payload)["item"]
+
+    with isolated_db.get_session() as session:
+        row = session.query(DecisionSignalRecord).filter_by(id=old_buy["id"]).one()
+        row.horizon = None
+        row.market_phase = None
+        session.commit()
+
+    monkeypatch.setattr(service, "_invalidate_opposing_active_signals", lambda *_args, **_kwargs: None)
+    new_sell = service.create_signal(
+        _payload(source_report_id=398, trace_id="trace-relaxed-fill-sell", action="sell")
+    )["item"]
+    monkeypatch.undo()
+
+    relaxed_payload = dict(buy_payload)
+    relaxed_payload.pop("horizon")
+    replayed_buy = service.create_signal(relaxed_payload)
+
+    assert replayed_buy["created"] is False
+    assert replayed_buy["item"]["id"] == old_buy["id"]
+    assert replayed_buy["item"]["horizon"] == "intraday"
+    assert replayed_buy["item"]["market_phase"] == "intraday"
+    assert service.get_signal(new_sell["id"])["status"] == "active"
+    assert service.get_signal(old_buy["id"])["status"] == "active"
+
+
+def test_service_propagates_unexpected_invalidation_failures(isolated_db) -> None:
+    class FailingInvalidationRepo:
+        def create_if_absent(self, fields, *, allow_relaxed_horizon_fill=False):
+            row = SimpleNamespace(
+                id=1,
+                status="active",
+                action=fields["action"],
+                market=fields["market"],
+                stock_code=fields["stock_code"],
+            )
+            return DecisionSignalCreateResult(
+                row=row,
+                created=True,
+                invalidation_reference_at=utc_naive_now(),
+            )
+
+        def list_active_by_stock_actions(self, **_kwargs):
+            raise RuntimeError("invalidation write failed")
+
+    service = DecisionSignalService(repo=FailingInvalidationRepo(), db_manager=isolated_db)
+
+    with pytest.raises(RuntimeError, match="invalidation write failed"):
+        service.create_signal(_payload(source_report_id=392, trace_id="trace-invalidation-failure"))

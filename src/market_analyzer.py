@@ -25,6 +25,7 @@ from src.search_service import SearchService
 from src.core.market_profile import get_profile, MarketProfile
 from src.core.market_strategy import get_market_strategy_blueprint
 from src.schemas.market_light import MarketLightSnapshot
+from src.services.run_diagnostics import record_llm_run, record_llm_run_started
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -547,7 +548,35 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         logger.info("[大盘] %s action=generate_review status=start", self._log_context())
         # Use the public generate_text() entry point - never access private analyzer attributes.
-        review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+        llm_started_at = time.perf_counter()
+        try:
+            record_llm_run_started(
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+            )
+            review = self.analyzer.generate_text(prompt, max_tokens=8192, temperature=0.7)
+        except Exception as exc:
+            record_llm_run(
+                success=False,
+                provider="litellm",
+                model=getattr(self.config, "litellm_model", None),
+                call_type="market_review",
+                duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
+                error_type=type(exc).__name__,
+                error_message=exc,
+            )
+            raise
+
+        record_llm_run(
+            success=bool(review),
+            provider="litellm",
+            model=getattr(self.config, "litellm_model", None),
+            call_type="market_review",
+            duration_ms=int((time.perf_counter() - llm_started_at) * 1000),
+            error_type=None if review else "EmptyResponse",
+            error_message=None if review else "empty market review response",
+        )
 
         if review:
             logger.info(

@@ -16,7 +16,6 @@ from contextlib import contextmanager
 import hashlib
 import json
 import logging
-import re
 import threading
 import time
 from datetime import datetime, date, timedelta, timezone
@@ -54,6 +53,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from src.agent.provider_trace import PROVIDER_TRACE_RETENTION_LIMIT
 from src.config import get_config
+from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -1460,7 +1460,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         save_snapshot: bool = True
     ) -> int:
         """
-        保存分析结果历史记录
+        保存分析结果历史记录。
+
+        Returns:
+            新保存的 AnalysisHistory.id；保存失败返回 0。
         """
         if result is None:
             return 0
@@ -1473,27 +1476,27 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         try:
             def _write(session: Session) -> int:
-                session.add(
-                    AnalysisHistory(
-                        query_id=query_id,
-                        code=result.code,
-                        name=result.name,
-                        report_type=report_type,
-                        sentiment_score=result.sentiment_score,
-                        operation_advice=result.operation_advice,
-                        trend_prediction=result.trend_prediction,
-                        analysis_summary=result.analysis_summary,
-                        raw_result=self._safe_json_dumps(raw_result),
-                        news_content=news_content,
-                        context_snapshot=context_text,
-                        ideal_buy=sniper_points.get("ideal_buy"),
-                        secondary_buy=sniper_points.get("secondary_buy"),
-                        stop_loss=sniper_points.get("stop_loss"),
-                        take_profit=sniper_points.get("take_profit"),
-                        created_at=datetime.now(),
-                    )
+                history = AnalysisHistory(
+                    query_id=query_id,
+                    code=result.code,
+                    name=result.name,
+                    report_type=report_type,
+                    sentiment_score=result.sentiment_score,
+                    operation_advice=result.operation_advice,
+                    trend_prediction=result.trend_prediction,
+                    analysis_summary=result.analysis_summary,
+                    raw_result=self._safe_json_dumps(raw_result),
+                    news_content=news_content,
+                    context_snapshot=context_text,
+                    ideal_buy=sniper_points.get("ideal_buy"),
+                    secondary_buy=sniper_points.get("secondary_buy"),
+                    stop_loss=sniper_points.get("stop_loss"),
+                    take_profit=sniper_points.get("take_profit"),
+                    created_at=datetime.now(),
                 )
-                return 1
+                session.add(history)
+                session.flush()
+                return int(history.id or 0)
             return self._run_write_transaction(
                 f"save_analysis_history[{result.code}]",
                 _write,
@@ -1622,6 +1625,34 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             ).scalars().all()
 
             return list(results)
+
+    def get_latest_analysis_history_id(
+        self,
+        *,
+        query_id: str,
+        code: str,
+        report_type: str,
+    ) -> Optional[int]:
+        """Return the latest matching history id for read-only lookups.
+
+        P2 automatic DecisionSignal extraction receives the freshly saved id
+        directly from ``save_analysis_history()`` and does not use this helper.
+        """
+
+        if not query_id or not code or not report_type:
+            return None
+
+        with self.get_session() as session:
+            return session.execute(
+                select(AnalysisHistory.id)
+                .where(
+                    AnalysisHistory.query_id == query_id,
+                    AnalysisHistory.code == code,
+                    AnalysisHistory.report_type == report_type,
+                )
+                .order_by(desc(AnalysisHistory.created_at), desc(AnalysisHistory.id))
+                .limit(1)
+            ).scalar_one_or_none()
     
     def get_analysis_history_paginated(
         self,
@@ -1811,7 +1842,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             )
             return list(results)
 
-    def get_latest_analysis_by_query_id(self, query_id: str) -> Optional[AnalysisHistory]:
+    def get_latest_analysis_by_query_id(
+        self,
+        query_id: str,
+        *,
+        code: Optional[str] = None,
+        report_type: Optional[str] = None,
+    ) -> Optional[AnalysisHistory]:
         """
         根据 query_id 查询最新一条分析历史记录
 
@@ -1819,14 +1856,22 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         Args:
             query_id: 分析记录关联的 query_id
+            code: 可选股票代码过滤，用于区分同一 query_id 下的 MARKET 与个股记录
+            report_type: 可选报告类型过滤
 
         Returns:
             AnalysisHistory 对象，不存在返回 None
         """
         with self.get_session() as session:
+            conditions = [AnalysisHistory.query_id == query_id]
+            if code:
+                conditions.append(AnalysisHistory.code == code)
+            if report_type:
+                conditions.append(AnalysisHistory.report_type == report_type)
+
             result = session.execute(
                 select(AnalysisHistory)
-                .where(AnalysisHistory.query_id == query_id)
+                .where(and_(*conditions))
                 .order_by(desc(AnalysisHistory.created_at))
                 .limit(1)
             ).scalars().first()
@@ -2163,146 +2208,12 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
     @staticmethod
     def _parse_sniper_value(value: Any) -> Optional[float]:
-        """
-        Parse a sniper point value from various formats to float.
-
-        Handles: numeric types, plain number strings, Chinese price formats
-        like "18.50元", range formats like "18.50-19.00", and text with
-        embedded numbers while filtering out MA indicators.
-        """
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            v = float(value)
-            return v if v > 0 else None
-
-        text = str(value).replace(',', '').replace('，', '').strip()
-        if not text or text == '-' or text == '—' or text == 'N/A':
-            return None
-
-        # 尝试直接解析纯数字字符串
-        try:
-            return float(text)
-        except ValueError:
-            pass
-
-        # 优先截取 "：" 到 "元" 之间的价格，避免误提取 MA5/MA10 等技术指标数字
-        colon_pos = max(text.rfind("："), text.rfind(":"))
-        yuan_pos = text.find("元", colon_pos + 1 if colon_pos != -1 else 0)
-        if yuan_pos != -1:
-            segment_start = colon_pos + 1 if colon_pos != -1 else 0
-            segment = text[segment_start:yuan_pos]
-            
-            # 使用 finditer 并过滤掉 MA 开头的数字
-            matches = list(re.finditer(r"-?\d+(?:\.\d+)?", segment))
-            valid_numbers = []
-            for m in matches:
-                # 检查前面是否是 "MA" (忽略大小写)
-                start_idx = m.start()
-                if start_idx >= 2:
-                    prefix = segment[start_idx-2:start_idx].upper()
-                    if prefix == "MA":
-                        continue
-                valid_numbers.append(m.group())
-            
-            if valid_numbers:
-                try:
-                    return abs(float(valid_numbers[-1]))
-                except ValueError:
-                    pass
-
-        # 兜底：无"元"字时，先截去第一个括号后的内容，避免误提取括号内技术指标数字
-        # 例如 "1.52-1.53 (回踩MA5/10附近)" → 仅在 "1.52-1.53 " 中搜索
-        paren_pos = len(text)
-        for paren_char in ('(', '（'):
-            pos = text.find(paren_char)
-            if pos != -1:
-                paren_pos = min(paren_pos, pos)
-        search_text = text[:paren_pos].strip() or text  # 括号前为空时降级用全文
-
-        valid_numbers = []
-        for m in re.finditer(r"\d+(?:\.\d+)?", search_text):
-            start_idx = m.start()
-            if start_idx >= 2 and search_text[start_idx-2:start_idx].upper() == "MA":
-                continue
-            valid_numbers.append(m.group())
-        if valid_numbers:
-            try:
-                return float(valid_numbers[-1])
-            except ValueError:
-                pass
-        return None
+        return parse_sniper_value(value)
 
     def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:
-        """
-        Extract sniper point values from an AnalysisResult.
+        """Extract normalized sniper point values from an AnalysisResult."""
 
-        Tries multiple extraction paths to handle different dashboard structures:
-        1. result.get_sniper_points() (standard path)
-        2. Direct dashboard dict traversal with various nesting levels
-        3. Fallback from raw_result dict if available
-        """
-        raw_points = {}
-
-        # Path 1: standard method
-        if hasattr(result, "get_sniper_points"):
-            raw_points = result.get_sniper_points() or {}
-
-        # Path 2: direct dashboard traversal when standard path yields empty values
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            dashboard = getattr(result, "dashboard", None)
-            if isinstance(dashboard, dict):
-                raw_points = self._find_sniper_in_dashboard(dashboard) or raw_points
-
-        # Path 3: try raw_result for agent mode results
-        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
-            raw_response = getattr(result, "raw_response", None)
-            if isinstance(raw_response, dict):
-                raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
-
-        return {
-            "ideal_buy": self._parse_sniper_value(raw_points.get("ideal_buy")),
-            "secondary_buy": self._parse_sniper_value(raw_points.get("secondary_buy")),
-            "stop_loss": self._parse_sniper_value(raw_points.get("stop_loss")),
-            "take_profit": self._parse_sniper_value(raw_points.get("take_profit")),
-        }
-
-    @staticmethod
-    def _find_sniper_in_dashboard(d: dict) -> Optional[Dict[str, Any]]:
-        """
-        Recursively search for sniper_points in a dashboard dict.
-        Handles various nesting: dashboard.battle_plan.sniper_points,
-        dashboard.dashboard.battle_plan.sniper_points, etc.
-        """
-        if not isinstance(d, dict):
-            return None
-
-        # Direct: d has sniper_points keys at top level
-        if "ideal_buy" in d:
-            return d
-
-        # d.sniper_points
-        sp = d.get("sniper_points")
-        if isinstance(sp, dict) and sp:
-            return sp
-
-        # d.battle_plan.sniper_points
-        bp = d.get("battle_plan")
-        if isinstance(bp, dict):
-            sp = bp.get("sniper_points")
-            if isinstance(sp, dict) and sp:
-                return sp
-
-        # d.dashboard.battle_plan.sniper_points (double-nested)
-        inner = d.get("dashboard")
-        if isinstance(inner, dict):
-            bp = inner.get("battle_plan")
-            if isinstance(bp, dict):
-                sp = bp.get("sniper_points")
-                if isinstance(sp, dict) and sp:
-                    return sp
-
-        return None
+        return extract_sniper_points(result)
 
     @staticmethod
     def _build_fallback_url_key(
@@ -2723,9 +2634,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         """Return aggregated token usage between from_dt and to_dt.
 
         Returns a dict with keys:
-          total_calls, total_tokens,
-          by_call_type: list of {call_type, calls, total_tokens},
-          by_model:     list of {model, calls, total_tokens}
+          total_calls, total_prompt_tokens, total_completion_tokens, total_tokens,
+          by_call_type: list of {call_type, calls, prompt_tokens,
+            completion_tokens, total_tokens},
+          by_model: list of {model, calls, prompt_tokens, completion_tokens,
+            total_tokens, max_total_tokens}
         """
         with self.session_scope() as session:
             base_filter = and_(
@@ -2737,6 +2650,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             totals = session.execute(
                 select(
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 ).where(base_filter)
             ).one()
@@ -2746,6 +2661,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 select(
                     LLMUsage.call_type,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
                 )
                 .where(base_filter)
@@ -2758,7 +2675,10 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 select(
                     LLMUsage.model,
                     func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.prompt_tokens), 0).label("prompt_tokens"),
+                    func.coalesce(func.sum(LLMUsage.completion_tokens), 0).label("completion_tokens"),
                     func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                    func.coalesce(func.max(LLMUsage.total_tokens), 0).label("max_total_tokens"),
                 )
                 .where(base_filter)
                 .group_by(LLMUsage.model)
@@ -2767,16 +2687,80 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         return {
             "total_calls": totals.calls,
+            "total_prompt_tokens": totals.prompt_tokens,
+            "total_completion_tokens": totals.completion_tokens,
             "total_tokens": totals.tokens,
             "by_call_type": [
-                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "call_type": r.call_type,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                }
                 for r in by_type_rows
             ],
             "by_model": [
-                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
+                {
+                    "model": r.model,
+                    "calls": r.calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.tokens,
+                    "max_total_tokens": r.max_total_tokens,
+                }
                 for r in by_model_rows
             ],
         }
+
+    def get_llm_usage_records(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return recent LLM usage audit rows between from_dt and to_dt.
+
+        Each row contains id, call_type, model, stock_code, prompt_tokens,
+        completion_tokens, total_tokens, and called_at. Results are ordered by
+        newest call first, and limit is clamped to the public API range.
+        """
+        normalized_limit = max(1, min(int(limit or 50), 200))
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(
+                    LLMUsage.id,
+                    LLMUsage.call_type,
+                    LLMUsage.model,
+                    LLMUsage.stock_code,
+                    LLMUsage.prompt_tokens,
+                    LLMUsage.completion_tokens,
+                    LLMUsage.total_tokens,
+                    LLMUsage.called_at,
+                )
+                .where(
+                    and_(
+                        LLMUsage.called_at >= from_dt,
+                        LLMUsage.called_at <= to_dt,
+                    )
+                )
+                .order_by(desc(LLMUsage.called_at), desc(LLMUsage.id))
+                .limit(normalized_limit)
+            ).all()
+
+        return [
+            {
+                "id": r.id,
+                "call_type": r.call_type,
+                "model": r.model,
+                "stock_code": r.stock_code,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "total_tokens": r.total_tokens,
+                "called_at": r.called_at,
+            }
+            for r in rows
+        ]
 
 
 # 便捷函数

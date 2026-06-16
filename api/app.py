@@ -265,7 +265,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     # 注册路由
     # ============================================================
     
-    app.include_router(api_v1_router)
+    app.include_router(api_v1_router, prefix="/api/v1")
     add_error_handlers(app)
     
     # ============================================================

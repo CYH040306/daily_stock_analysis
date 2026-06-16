@@ -75,16 +75,18 @@ def _internal_error(message: str, exc: Exception) -> HTTPException:
     },
     summary="创建或去重决策信号",
     description=(
-        "显式写入 DecisionSignal。命中同源去重键时返回已有记录和 created=false；"
-        "若已有记录为 expired 且新请求为 active 并携带未来 expires_at，则原地刷新该记录；"
-        "P1 不保证并发绝对幂等。"
+        "显式写入 DecisionSignal。未传 horizon/expires_at 时由服务补默认生命周期；"
+        "命中同源去重键或窄 relaxed 去重时返回已有记录和 created=false；"
+        "active 新建或 expired 续期会失效同股旧 active 相反信号，"
+        "active duplicate retry 也会重跑该修复；普通旧 duplicate/replay 不作为新的激活事件；"
+        "不保证并发绝对幂等。"
     ),
     operation_id="createDecisionSignal",
 )
 def create_signal(request: DecisionSignalCreateRequest) -> DecisionSignalMutationResponse:
     service = DecisionSignalService()
     try:
-        payload = request.model_dump()
+        payload = request.model_dump(exclude_unset=True)
         return DecisionSignalMutationResponse(**service.create_signal(payload))
     except DecisionSignalStorageError as exc:
         raise _internal_error("Create decision signal failed", exc)
@@ -234,7 +236,10 @@ def get_signal(signal_id: int) -> DecisionSignalItem:
         500: {"model": ErrorResponse, "description": "更新失败"},
     },
     summary="更新决策信号状态",
-    description="只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存，P1 不实现复杂状态机。",
+    description=(
+        "只更新合法状态和可选 metadata；传入 metadata 时按整包替换保存。"
+        "expired/invalidated/closed/archived 等 terminal 状态不能直接 PATCH 回 active。"
+    ),
     operation_id="updateDecisionSignalStatus",
 )
 def update_status(signal_id: int, request: DecisionSignalStatusUpdateRequest) -> DecisionSignalItem:
