@@ -21,6 +21,7 @@ from api.v1.endpoints import (
     decision_signals,
     health,
     history,
+    intelligence,
     portfolio,
     stocks,
     system_config,
@@ -101,6 +102,12 @@ router.include_router(
     alphasift.router,
     prefix="/alphasift",
     tags=["AlphaSift"]
+)
+
+router.include_router(
+    intelligence.router,
+    prefix="/intelligence",
+    tags=["Intelligence"]
 )
 
 router.include_router(

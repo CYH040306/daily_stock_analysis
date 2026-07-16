@@ -48,6 +48,18 @@ class FakeUsageDbManager:
                 "call_type": "analysis",
                 "model": "openai/gpt-test",
                 "stock_code": "600519",
+                "provider": "openai",
+                "language": "zh",
+                "market_group": "cn",
+                "analysis_mode": "stock_analysis",
+                "legacy_prompt_mode": "skill_aware",
+                "skill_config_hmac": "a" * 64,
+                "transport": "litellm",
+                "message_count": 2,
+                "estimated_total_prompt_tokens": 2000,
+                "approx_common_prefix_chars": 120,
+                "approx_common_prefix_tokens": 40,
+                "known_dynamic_marker_positions": '[{"marker_name":"stock_code","message_role":"user","char_offset":12}]',
                 "prompt_tokens": 10,
                 "completion_tokens": 50,
                 "total_tokens": 60,
@@ -74,7 +86,21 @@ class UsageDashboardApiTestCase(unittest.TestCase):
         self.assertNotIn("context_window", body["by_model"][0])
         self.assertNotIn("context_usage_ratio", body["by_model"][0])
         self.assertEqual(body["recent_calls"][0]["stock_code"], "600519")
-        self.assertNotIn("provider", body["recent_calls"][0])
+        p05a_internal_fields = {
+            "provider",
+            "language",
+            "market_group",
+            "analysis_mode",
+            "legacy_prompt_mode",
+            "skill_config_hmac",
+            "transport",
+            "message_count",
+            "estimated_total_prompt_tokens",
+            "approx_common_prefix_chars",
+            "approx_common_prefix_tokens",
+            "known_dynamic_marker_positions",
+        }
+        self.assertTrue(p05a_internal_fields.isdisjoint(body["recent_calls"][0]))
         self.assertNotIn("context_window", body["recent_calls"][0])
         self.assertNotIn("context_usage_ratio", body["recent_calls"][0])
 
